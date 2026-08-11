@@ -2,13 +2,29 @@
 
 Contexto do projeto e da atividade avaliativa para quem for desenvolver ou dar suporte com IA neste repositório.
 
+## ESCOPO DESTA ENTREGA - LEIA ANTES DE ESCREVER QUALQUER CÓDIGO
+
+Nesta entrega (A1/1) implementa-se EXCLUSIVAMENTE o que o enunciado da avaliação A1 pede, no modelo padrão Smart Grid: Tensão (V), Corrente (A), Potência (P = V x I), disjuntor, corte de emergência, setpoint, regras de alerta, histórico de eventos e painel serial visual.
+
+O README.md descreve a intenção da equipe de usar a opção de tema livre e transformar o supervisor em um Monitor de Qualidade do Ar (protótipo de Microcontroladores: STM32F103C8T6, BME280, MQ-2, HC-05). **Isso é direção futura do projeto e NÃO faz parte desta entrega.** Nada do sistema de qualidade do ar deve ser implementado agora.
+
+Não implementar nesta etapa, em nenhuma camada (`/ui`, `/controllers`, `/models`):
+
+- Grandezas de qualidade do ar: temperatura, umidade, pressão, nível de gás/fumaça
+- Sensores e hardware do protótipo: BME280, MQ-2, HC-05, STM32
+- Indicador de "status de qualidade do ar" ou faixas segura/atenção/perigo no lugar do disjuntor
+- Comando de ventilação ou qualquer atuador que não seja o corte de emergência (RELAY_OFF) do enunciado
+- Comunicação serial real com o hardware (só na Unidade 4)
+
+Regra prática: se um requisito não estiver listado em "Requisitos funcionais obrigatórios" ou nos "Critérios de avaliação" deste arquivo, ele não entra nesta entrega. Em caso de conflito entre o README e este arquivo, vale este arquivo.
+
 ## Sobre o projeto
 
 Sistema de Supervisão e Controle Desktop, tema de referência Monitor de Consumo e Qualidade de Energia (Smart Grid). O software funciona como uma Interface Homem-Máquina de supervisão energética: processa sinais analógicos e digitais vindos de um microcontrolador e permite intervenção do operador em tempo real.
 
 Na entrega final do semestre (dezembro) o sistema vai processar telemetria real de tensão e corrente eficazes (RMS) de sensores como ACS712 / ZMPT101B, calcular a potência ativa (P = V x I), monitorar o disjuntor de proteção e permitir corte emergencial de carga via relé.
 
-Opção de tema livre: a equipe pode aplicar esse software supervisor a um protótipo físico já desenvolvido em Microcontroladores, Microprocessadores ou Sistemas Embarcados, desde que atenda aos mesmos requisitos de leitura analógica/digital e acionamento de atuadores.
+Opção de tema livre: o enunciado permite aplicar esse software supervisor a um protótipo físico já desenvolvido em Microcontroladores, Microprocessadores ou Sistemas Embarcados, desde que atenda aos mesmos requisitos de leitura analógica/digital e acionamento de atuadores. A equipe pretende usar essa opção mais adiante (Monitor de Qualidade do Ar, conforme o README), mas **a entrega A1/1 é feita no tema de referência Smart Grid**, com V, I, P e disjuntor. A adaptação para o tema livre é tratada em etapa posterior.
 
 ## Etapa atual - A1/1
 
@@ -17,7 +33,9 @@ Opção de tema livre: a equipe pode aplicar esse software supervisor a um prot�
 - Início: 10/08/2026
 - Entrega: 17/08/2026
 
-Nesta etapa a aplicação NÃO precisa estar fisicamente conectada ao hardware - a integração serial real é só na Unidade 4. O que precisa estar pronto agora: arquitetura em camadas (MVC), navegação entre janelas, layout responsivo e interface gráfica completa, tudo funcionando com dados simulados.
+Nesta etapa a aplicação NÃO precisa estar fisicamente conectada ao hardware - a integração serial real é só na Unidade 4. O que precisa estar pronto agora: arquitetura em camadas (MVC), navegação entre janelas, layout responsivo e interface gráfica completa, tudo funcionando com dados simulados de tensão e corrente.
+
+Escopo fechado: entregar os requisitos abaixo bem feitos vale mais do que antecipar funcionalidade. Nada de qualidade do ar aqui (ver seção de escopo no topo).
 
 ## Arquitetura obrigatória
 
