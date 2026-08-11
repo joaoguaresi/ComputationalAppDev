@@ -22,9 +22,9 @@ class Medicao:
 
     def get_dados(self) -> dict:
         dicionario = {
-            "tensao": self.tensao_v,
-            "corrente": self.corrente_a,
-            "potencia": self.calcular_potencia(),
+            "tensao": round(self.tensao_v, 2),
+            "corrente": round(self.corrente_a, 2),
+            "potencia": round(self.calcular_potencia(), 2),
             "data_hora": self.timestamp.strftime("%d/%m/%Y %H:%M:%S"),
         }
         return dicionario
