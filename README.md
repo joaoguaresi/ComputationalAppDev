@@ -1,4 +1,4 @@
-# Sistema de Supervisão e Controle Desktop - Monitor de Qualidade do Ar
+# Sistema de Supervisão e Controle Desktop - Monitor de Consumo e Qualidade de Energia
 
 Projeto desenvolvido para a disciplina de Engenharia de Computação (UNOESC), atividade avaliativa A1/1 - Sistema de Supervisão e Controle Desktop.
 
@@ -11,20 +11,26 @@ Projeto desenvolvido para a disciplina de Engenharia de Computação (UNOESC), a
 
 ## Descrição da proposta
 
-Este projeto usa a opção de tema livre da atividade A1/1, reaproveitando o protótipo desenvolvido anteriormente na disciplina de Microcontroladores (Projeto Qualidade): um sistema embarcado com STM32F103C8T6, sensor BME280 (temperatura, umidade e pressão), sensor MQ-2 (gás/fumaça) e módulo Bluetooth HC-05, originalmente lido por um aplicativo de terminal serial genérico no celular.
+Aplicação desktop em Python com PySide6 que funciona como Interface Homem-Máquina de supervisão energética (Smart Grid), no tema de referência da atividade. O software processa os sinais analógicos e digitais que viriam de um microcontrolador e permite intervenção do operador em tempo real.
 
-A proposta é substituir esse terminal genérico por uma aplicação desktop própria, em Python com PySide6, funcionando como Interface Homem-Máquina de supervisão do sistema. No lugar dos campos padrão de Tensão/Corrente/Potência do modelo da atividade, o dashboard exibe as três leituras do BME280 (temperatura, umidade, pressão) e o nível de gás detectado pelo MQ-2. O indicador de status, equivalente ao disjuntor do modelo padrão, reflete a condição de qualidade do ar, seguindo a mesma lógica de faixas já usada no firmware original (segura, atenção, perigo).
+O dashboard exibe as grandezas elétricas monitoradas e o estado da proteção:
 
-A aplicação vai oferecer:
+- Indicadores de Tensão (V), Corrente (A) e Potência ativa, calculada como P = V x I
+- Indicador visual do disjuntor: verde para "FECHADO / NORMAL", vermelho para "ABERTO / PROTEÇÃO ATIVADA"
+- Botão de CORTE DE EMERGÊNCIA com confirmação antes do envio, disparando o comando RELAY_OFF
+- Ajuste de setpoint e cadastro de regras de alerta (limites máximos de tensão, corrente e potência) em janela modal
+- Alerta visual quando a potência ultrapassa o limite configurado, com registro automático da ocorrência
+- Gráfico de tendência pré-carregado com o histórico da curva de consumo
+- Painel de configuração da conexão serial (porta COM, baud rate 9600 ou 115200, timeout)
+- Histórico de eventos com data/hora, tipo, descrição e valor medido
 
-- Dashboard com leituras em tempo real de temperatura, umidade, pressão e nível de gás/fumaça
-- Indicador visual do status de qualidade do ar
-- Configuração de limites de alerta, hoje fixos no firmware, ajustáveis pela interface
-- Comando de atuação emergencial (ex.: acionamento de ventilação) disparado pelo operador, com confirmação antes do envio - funcionalidade nova em relação ao protótipo original, que só tinha LEDs passivos
-- Painel de configuração da conexão serial (porta, baud rate 9600, timeout)
-- Histórico de eventos registrados (alertas, mudanças de estado, comandos enviados)
+Na entrega A1/1 a aplicação roda inteiramente com dados simulados de tensão e corrente, sem conexão física com o hardware. Na entrega final o sistema deve ler telemetria real de sensores como ACS712 e ZMPT101B e acionar o corte de carga via relé.
 
-Na entrega A1/1, a aplicação roda com dados simulados e não está fisicamente conectada ao hardware - essa integração fica pra Unidade 4, quando a comunicação serial com o STM32 será implementada de fato.
+## Direção futura (Unidade 4)
+
+A atividade permite a opção de tema livre, aplicando este supervisor a um protótipo físico já desenvolvido em Microcontroladores. A equipe pretende usar essa opção mais adiante, adaptando a aplicação para o Projeto Qualidade: um sistema embarcado com STM32F103C8T6, sensor BME280 (temperatura, umidade e pressão), sensor MQ-2 (gás/fumaça) e módulo Bluetooth HC-05, hoje lido por um aplicativo de terminal serial genérico no celular.
+
+Essa adaptação **não faz parte da entrega A1/1** e será tratada junto com a implementação da comunicação serial real.
 
 ## Tecnologias
 
@@ -42,6 +48,17 @@ Na entrega A1/1, a aplicação roda com dados simulados e não está fisicamente
 main.py        ponto de entrada da aplicação
 ```
 
+## Como executar
+
+```bash
+git clone https://github.com/joaoguaresi/ComputationalAppDev
+cd ComputationalAppDev
+python -m venv .venv
+source .venv/bin/activate
+pip install pyside6 pyqtgraph
+python main.py
+```
+
 ## Status atual
 
-Em desenvolvimento - etapa A1/1 (entrega 17/08/2026). Arquitetura em camadas, navegação entre janelas e interface gráfica em construção, com dados simulados.
+Em desenvolvimento - etapa A1/1 (entrega 17/08/2026). Camada de models concluída (medição, disjuntor, regras de alerta, histórico de eventos e simulador de telemetria). Interface gráfica, controllers e navegação entre janelas em construção, com dados simulados.
