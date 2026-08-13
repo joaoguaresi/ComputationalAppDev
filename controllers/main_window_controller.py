@@ -1,0 +1,71 @@
+from PySide6.QtCore import QTimer
+import pyqtgraph as pg
+
+from models.disjuntor import Disjuntor
+from models.simulador_telemetria import SimuladorTelemetria
+from ui.main_window import Ui_JanelaPrincipal
+
+
+class MainWindowController:
+    LIMITE_PONTOS_GRAFICO = 120
+    INTERVALO_SIMULACAO_MS = 2000
+
+    def __init__(self, janela):
+        self.janela = janela
+        self.ui = Ui_JanelaPrincipal()
+        self.ui.setupUi(janela)
+        self.ui.layout_principal.setStretch(2, 1)
+        for coluna in range(4):
+            self.ui.grid_indicadores.setColumnStretch(coluna, 1)
+
+        self.simulador = SimuladorTelemetria()
+        self.disjuntor = Disjuntor()
+        self.medicoes = self.simulador.gerar_historico()
+
+        self._configurar_grafico()
+        self._redesenhar_grafico()
+        self._atualizar_indicadores(self.medicoes[-1])
+        self._atualizar_disjuntor()
+
+        self.timer = QTimer(self.janela)
+        self.timer.timeout.connect(self._simular_nova_medicao)
+        self.timer.start(self.INTERVALO_SIMULACAO_MS)
+
+    def _configurar_grafico(self):
+        grafico = self.ui.grafico_tendencia
+        grafico.setBackground("w")
+        grafico.showGrid(x=True, y=True, alpha=0.3)
+        grafico.setLabel("bottom", "Tempo (s)")
+        grafico.setLabel("left", "Potência (W)")
+
+        self.curva_potencia = grafico.plot(pen=pg.mkPen("#9B59B6", width=2))
+
+    def _redesenhar_grafico(self):
+        series = SimuladorTelemetria.extrair_series(self.medicoes)
+        inicio = series["segundos"][0]
+        eixo_x = [segundo - inicio for segundo in series["segundos"]]
+        self.curva_potencia.setData(eixo_x, series["potencia"])
+
+    def _atualizar_indicadores(self, medicao):
+        dados = medicao.get_dados()
+        self.ui.lcd_tensao.display(dados["tensao"])
+        self.ui.lcd_corrente.display(dados["corrente"])
+        self.ui.lcd_potencia.display(dados["potencia"])
+
+    def _atualizar_disjuntor(self):
+        dados = self.disjuntor.get_dados()
+        self.ui.label_disjuntor_status.setText(dados["texto"])
+        self.ui.label_disjuntor_status.setStyleSheet(
+            f"background-color: {dados['cor']}; color: white; "
+            "border-radius: 6px; padding: 6px; font-weight: bold;"
+        )
+
+    def _simular_nova_medicao(self):
+        medicao = self.simulador.proxima_medicao()
+        self.medicoes.append(medicao)
+        if len(self.medicoes) > self.LIMITE_PONTOS_GRAFICO:
+            self.medicoes = self.medicoes[-self.LIMITE_PONTOS_GRAFICO:]
+
+        self._redesenhar_grafico()
+        self._atualizar_indicadores(medicao)
+        self._atualizar_disjuntor()
