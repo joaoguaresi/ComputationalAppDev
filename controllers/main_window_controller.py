@@ -20,7 +20,7 @@ class MainWindowController:
 
         self.simulador = SimuladorTelemetria()
         self.disjuntor = Disjuntor()
-        self.medicoes = self.simulador.gerar_historico()
+        self.medicoes = self.simulador.gerar_historico(intervalo_segundos=self.INTERVALO_SIMULACAO_MS / 1000)
 
         self._configurar_grafico()
         self._redesenhar_grafico()
