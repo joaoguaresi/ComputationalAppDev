@@ -176,6 +176,274 @@
      </layout>
     </item>
     <item>
+     <layout class="QHBoxLayout" name="layout_paineis">
+      <property name="spacing">
+       <number>16</number>
+      </property>
+      <item>
+       <widget class="QGroupBox" name="group_comandos">
+        <property name="title">
+         <string>Comandos e Proteção</string>
+        </property>
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+          <horstretch>1</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <layout class="QGridLayout" name="grid_comandos">
+         <property name="horizontalSpacing">
+          <number>12</number>
+         </property>
+         <property name="verticalSpacing">
+          <number>8</number>
+         </property>
+         <item row="0" column="0">
+          <widget class="QLabel" name="label_setpoint">
+           <property name="text">
+            <string>Setpoint de potência</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QDoubleSpinBox" name="spin_setpoint">
+           <property name="minimum">
+            <double>100.000000000000000</double>
+           </property>
+           <property name="maximum">
+            <double>10000.000000000000000</double>
+           </property>
+           <property name="singleStep">
+            <double>50.000000000000000</double>
+           </property>
+           <property name="decimals">
+            <number>1</number>
+           </property>
+           <property name="value">
+            <double>2000.000000000000000</double>
+           </property>
+           <property name="suffix">
+            <string> W</string>
+           </property>
+           <property name="toolTip">
+            <string>Limite máximo de potência monitorado pela proteção local</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="0" colspan="2">
+          <widget class="QSlider" name="slider_setpoint">
+           <property name="minimum">
+            <number>100</number>
+           </property>
+           <property name="maximum">
+            <number>10000</number>
+           </property>
+           <property name="singleStep">
+            <number>50</number>
+           </property>
+           <property name="pageStep">
+            <number>250</number>
+           </property>
+           <property name="value">
+            <number>2000</number>
+           </property>
+           <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+           </property>
+          </widget>
+         </item>
+         <item row="2" column="0" colspan="2">
+          <widget class="QLabel" name="label_alerta_status">
+           <property name="minimumSize">
+            <size>
+             <width>0</width>
+             <height>40</height>
+            </size>
+           </property>
+           <property name="text">
+            <string>Proteção: dentro do limite</string>
+           </property>
+           <property name="alignment">
+            <set>Qt::AlignCenter</set>
+           </property>
+           <property name="wordWrap">
+            <bool>true</bool>
+           </property>
+           <property name="styleSheet">
+            <string notr="true">background-color: #2ECC71; color: white; border-radius: 6px; padding: 6px; font-weight: bold;</string>
+           </property>
+          </widget>
+         </item>
+         <item row="3" column="0" colspan="2">
+          <widget class="QPushButton" name="btn_corte_emergencia">
+           <property name="minimumSize">
+            <size>
+             <width>0</width>
+             <height>48</height>
+            </size>
+           </property>
+           <property name="text">
+            <string>CORTE DE EMERGÊNCIA</string>
+           </property>
+           <property name="cursor">
+            <cursorShape>PointingHandCursor</cursorShape>
+           </property>
+           <property name="styleSheet">
+            <string notr="true">QPushButton { background-color: #C0392B; color: white; border-radius: 6px; font-size: 12pt; font-weight: bold; }
+QPushButton:hover { background-color: #E74C3C; }
+QPushButton:disabled { background-color: #95A5A6; }</string>
+           </property>
+          </widget>
+         </item>
+         <item row="4" column="0" colspan="2">
+          <widget class="QPushButton" name="btn_religar_disjuntor">
+           <property name="minimumSize">
+            <size>
+             <width>0</width>
+             <height>34</height>
+            </size>
+           </property>
+           <property name="text">
+            <string>Religar disjuntor</string>
+           </property>
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="cursor">
+            <cursorShape>PointingHandCursor</cursorShape>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+      <item>
+       <widget class="QGroupBox" name="group_serial">
+        <property name="title">
+         <string>Configuração da Conexão Serial</string>
+        </property>
+        <property name="sizePolicy">
+         <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+          <horstretch>1</horstretch>
+          <verstretch>0</verstretch>
+         </sizepolicy>
+        </property>
+        <layout class="QGridLayout" name="grid_serial">
+         <property name="horizontalSpacing">
+          <number>12</number>
+         </property>
+         <property name="verticalSpacing">
+          <number>8</number>
+         </property>
+         <item row="0" column="0">
+          <widget class="QLabel" name="label_porta">
+           <property name="text">
+            <string>Porta COM</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QComboBox" name="combo_porta"/>
+         </item>
+         <item row="1" column="0">
+          <widget class="QLabel" name="label_baudrate">
+           <property name="text">
+            <string>Baud Rate</string>
+           </property>
+          </widget>
+         </item>
+         <item row="1" column="1">
+          <widget class="QComboBox" name="combo_baudrate"/>
+         </item>
+         <item row="2" column="0">
+          <widget class="QLabel" name="label_timeout">
+           <property name="text">
+            <string>Timeout</string>
+           </property>
+          </widget>
+         </item>
+         <item row="2" column="1">
+          <widget class="QSpinBox" name="spin_timeout">
+           <property name="minimum">
+            <number>100</number>
+           </property>
+           <property name="maximum">
+            <number>10000</number>
+           </property>
+           <property name="singleStep">
+            <number>100</number>
+           </property>
+           <property name="value">
+            <number>1000</number>
+           </property>
+           <property name="suffix">
+            <string> ms</string>
+           </property>
+          </widget>
+         </item>
+         <item row="3" column="0">
+          <widget class="QPushButton" name="btn_conectar">
+           <property name="minimumSize">
+            <size>
+             <width>0</width>
+             <height>34</height>
+            </size>
+           </property>
+           <property name="text">
+            <string>Conectar</string>
+           </property>
+           <property name="cursor">
+            <cursorShape>PointingHandCursor</cursorShape>
+           </property>
+          </widget>
+         </item>
+         <item row="3" column="1">
+          <widget class="QPushButton" name="btn_desconectar">
+           <property name="minimumSize">
+            <size>
+             <width>0</width>
+             <height>34</height>
+            </size>
+           </property>
+           <property name="text">
+            <string>Desconectar</string>
+           </property>
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="cursor">
+            <cursorShape>PointingHandCursor</cursorShape>
+           </property>
+          </widget>
+         </item>
+         <item row="4" column="0" colspan="2">
+          <widget class="QLabel" name="label_serial_status">
+           <property name="minimumSize">
+            <size>
+             <width>0</width>
+             <height>40</height>
+            </size>
+           </property>
+           <property name="text">
+            <string>DESCONECTADO</string>
+           </property>
+           <property name="alignment">
+            <set>Qt::AlignCenter</set>
+           </property>
+           <property name="wordWrap">
+            <bool>true</bool>
+           </property>
+           <property name="styleSheet">
+            <string notr="true">background-color: #7F8C8D; color: white; border-radius: 6px; padding: 6px; font-weight: bold;</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+     </layout>
+    </item>
+    <item>
      <widget class="QGroupBox" name="group_grafico">
       <property name="title">
        <string>Gráfico de Tendência</string>

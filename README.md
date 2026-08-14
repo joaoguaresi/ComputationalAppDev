@@ -61,4 +61,4 @@ python main.py
 
 ## Status atual
 
-Em desenvolvimento - etapa A1/1 (entrega 17/08/2026). Camada de models concluída (medição, disjuntor, regras de alerta, histórico de eventos e simulador de telemetria). Interface gráfica, controllers e navegação entre janelas em construção, com dados simulados.
+Em desenvolvimento - etapa A1/1 (entrega 17/08/2026). Camada de models concluída (medição, disjuntor, regras de alerta, histórico de eventos, configuração serial e simulador de telemetria). Dashboard principal com indicadores, badge do disjuntor e gráfico de tendência pré-carregado funcionando. Comandos do operador concluídos: corte de emergência com confirmação, setpoint de potência com proteção local (alerta visual e registro do evento) e painel de configuração serial com status simulado. Janela modal de regras e tabela de histórico em construção.

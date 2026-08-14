@@ -1,7 +1,9 @@
 from PySide6.QtCore import QTimer
 import pyqtgraph as pg
 
+from controllers.comandos_controller import ComandosController
 from models.disjuntor import Disjuntor
+from models.medicao import Medicao
 from models.simulador_telemetria import SimuladorTelemetria
 from ui.main_window import Ui_JanelaPrincipal
 
@@ -14,7 +16,7 @@ class MainWindowController:
         self.janela = janela
         self.ui = Ui_JanelaPrincipal()
         self.ui.setupUi(janela)
-        self.ui.layout_principal.setStretch(2, 1)
+        self.ui.layout_principal.setStretchFactor(self.ui.group_grafico, 1)
         for coluna in range(4):
             self.ui.grid_indicadores.setColumnStretch(coluna, 1)
 
@@ -22,10 +24,14 @@ class MainWindowController:
         self.disjuntor = Disjuntor()
         self.medicoes = self.simulador.gerar_historico(intervalo_segundos=self.INTERVALO_SIMULACAO_MS / 1000)
 
+        self.comandos = ComandosController(self.janela, self.ui, self.disjuntor)
+        self.comandos.estado_disjuntor_alterado.connect(self._atualizar_disjuntor)
+
         self._configurar_grafico()
         self._redesenhar_grafico()
         self._atualizar_indicadores(self.medicoes[-1])
         self._atualizar_disjuntor()
+        self.comandos.avaliar_protecao(self.medicoes[-1])
 
         self.timer = QTimer(self.janela)
         self.timer.timeout.connect(self._simular_nova_medicao)
@@ -62,6 +68,9 @@ class MainWindowController:
 
     def _simular_nova_medicao(self):
         medicao = self.simulador.proxima_medicao()
+        if not self.comandos.carga_esta_ativa():
+            medicao = Medicao(medicao.tensao_v, 0.0, medicao.timestamp)
+
         self.medicoes.append(medicao)
         if len(self.medicoes) > self.LIMITE_PONTOS_GRAFICO:
             self.medicoes = self.medicoes[-self.LIMITE_PONTOS_GRAFICO:]
@@ -69,3 +78,4 @@ class MainWindowController:
         self._redesenhar_grafico()
         self._atualizar_indicadores(medicao)
         self._atualizar_disjuntor()
+        self.comandos.avaliar_protecao(medicao)
