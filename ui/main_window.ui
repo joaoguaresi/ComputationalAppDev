@@ -314,6 +314,22 @@ QPushButton:disabled { background-color: #95A5A6; }</string>
            </property>
           </widget>
          </item>
+         <item row="5" column="0" colspan="2">
+          <widget class="QPushButton" name="btn_regras_alerta">
+           <property name="minimumSize">
+            <size>
+             <width>0</width>
+             <height>34</height>
+            </size>
+           </property>
+           <property name="text">
+            <string>Configurar Regras de Alerta</string>
+           </property>
+           <property name="cursor">
+            <cursorShape>PointingHandCursor</cursorShape>
+           </property>
+          </widget>
+         </item>
         </layout>
        </widget>
       </item>
@@ -451,6 +467,51 @@ QPushButton:disabled { background-color: #95A5A6; }</string>
       <layout class="QVBoxLayout" name="layout_grafico">
        <item>
         <widget class="PlotWidget" name="grafico_tendencia"/>
+       </item>
+      </layout>
+     </widget>
+    </item>
+    <item>
+     <widget class="QGroupBox" name="group_historico">
+      <property name="title">
+       <string>Histórico de Eventos</string>
+      </property>
+      <layout class="QVBoxLayout" name="layout_historico">
+       <item>
+        <widget class="QTableWidget" name="tabela_historico">
+         <property name="minimumSize">
+          <size>
+           <width>0</width>
+           <height>180</height>
+          </size>
+         </property>
+         <property name="editTriggers">
+          <set>QAbstractItemView::NoEditTriggers</set>
+         </property>
+         <property name="selectionBehavior">
+          <enum>QAbstractItemView::SelectRows</enum>
+         </property>
+         <column>
+          <property name="text">
+           <string>Data/Hora</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Tipo de Evento</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Descrição</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Valor Medido</string>
+          </property>
+         </column>
+        </widget>
        </item>
       </layout>
      </widget>

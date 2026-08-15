@@ -1,6 +1,7 @@
 from PySide6.QtCore import QObject, Signal
-from PySide6.QtWidgets import QMessageBox
+from PySide6.QtWidgets import QDialog, QMessageBox
 
+from controllers.regras_alerta_controller import RegrasAlertaController
 from models.configuracao_serial import ConfiguracaoSerial
 from models.evento_historico import EventoHistorico
 from models.regra_alerta import RegraAlerta
@@ -58,6 +59,9 @@ class ComandosController(QObject):
         self.medicao_atual = None
         self.nivel_atual = ComandosController.NORMAL
 
+        self.regras_adicionais = []
+        self._regras_violadas = set()
+
         self._preencher_painel_serial()
         self._conectar_sinais()
         self._atualizar_botoes_disjuntor()
@@ -83,6 +87,7 @@ class ComandosController(QObject):
 
         self.ui.btn_corte_emergencia.clicked.connect(self._ao_solicitar_corte)
         self.ui.btn_religar_disjuntor.clicked.connect(self._ao_solicitar_religamento)
+        self.ui.btn_regras_alerta.clicked.connect(self._ao_abrir_regras_alerta)
 
         self.ui.combo_porta.currentTextChanged.connect(self._ao_alterar_porta)
         self.ui.combo_baudrate.currentIndexChanged.connect(self._ao_alterar_baudrate)
@@ -115,6 +120,34 @@ class ComandosController(QObject):
                 f"de {self.regra_setpoint.limite_max:.2f} W"
             )
             self._registrar_evento(EventoHistorico.LIMITE_EXCEDIDO, descricao, potencia, "W")
+
+        self._avaliar_regras_adicionais(medicao)
+
+    def aplicar_regras(self, regras):
+        """Recebe as regras cadastradas no QDialog de regras de alerta."""
+        self.regras_adicionais = list(regras)
+        self._regras_violadas.clear()
+        if self.medicao_atual is not None:
+            self._avaliar_regras_adicionais(self.medicao_atual)
+
+    def get_regras(self) -> list:
+        return list(self.regras_adicionais)
+
+    def _avaliar_regras_adicionais(self, medicao):
+        for indice, regra in enumerate(self.regras_adicionais):
+            violada = regra.avaliar(medicao)
+            if violada and indice not in self._regras_violadas:
+                self._regras_violadas.add(indice)
+                if regra.grandeza == RegraAlerta.CORRENTE:
+                    valor = medicao.corrente_a
+                elif regra.grandeza == RegraAlerta.TENSAO:
+                    valor = medicao.tensao_v
+                else:
+                    valor = medicao.calcular_potencia()
+                descricao = f"{regra.descricao} — limite de {regra.limite_max:.2f} {regra.get_unidade()} ultrapassado"
+                self._registrar_evento(EventoHistorico.LIMITE_EXCEDIDO, descricao, valor, regra.get_unidade())
+            elif not violada and indice in self._regras_violadas:
+                self._regras_violadas.discard(indice)
 
     def _classificar_potencia(self, potencia) -> str:
         if self.regra_setpoint.foi_violada(potencia):
@@ -167,6 +200,21 @@ class ComandosController(QObject):
 
     def _ao_arrastar_slider(self, valor):
         self.ui.spin_setpoint.setValue(float(valor))
+
+    # ------------------------------------------------------------------
+    # Regras de alerta (QDialog modal)
+    # ------------------------------------------------------------------
+
+    def _ao_abrir_regras_alerta(self):
+        dialog = QDialog(self.janela)
+        regras_dialog = RegrasAlertaController(dialog, regras_iniciais=self.regras_adicionais)
+
+        if dialog.exec() == QDialog.Accepted:
+            self.aplicar_regras(regras_dialog.get_regras())
+            self._registrar_evento(
+                "Regras de Alerta",
+                f"{len(self.regras_adicionais)} regra(s) de alerta atualizada(s) pelo operador",
+            )
 
     # ------------------------------------------------------------------
     # Corte de emergência e religamento

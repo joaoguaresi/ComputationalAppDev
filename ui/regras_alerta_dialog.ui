@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>RegrasAlertaDialog</class>
+ <widget class="QDialog" name="RegrasAlertaDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>520</width>
+    <height>520</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Cadastro de Regras de Alerta</string>
+  </property>
+  <layout class="QVBoxLayout" name="layout_dialog">
+   <item>
+    <widget class="QLabel" name="label_instrucoes">
+     <property name="text">
+      <string>Cadastre ao menos duas regras de alerta (ex.: limite máximo de corrente e de tensão).</string>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="group_formulario">
+     <property name="title">
+      <string>Nova Regra</string>
+     </property>
+     <layout class="QGridLayout" name="grid_formulario">
+      <item row="0" column="0">
+       <widget class="QLabel" name="label_grandeza">
+        <property name="text">
+         <string>Grandeza</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QComboBox" name="combo_grandeza"/>
+      </item>
+      <item row="1" column="0">
+       <widget class="QLabel" name="label_limite_max">
+        <property name="text">
+         <string>Limite máximo</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QDoubleSpinBox" name="spin_limite_max">
+        <property name="minimum">
+         <double>0.100000000000000</double>
+        </property>
+        <property name="maximum">
+         <double>100000.000000000000000</double>
+        </property>
+        <property name="value">
+         <double>100.000000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QCheckBox" name="check_usar_limite_min">
+        <property name="text">
+         <string>Usar limite mínimo</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QDoubleSpinBox" name="spin_limite_min">
+        <property name="enabled">
+         <bool>false</bool>
+        </property>
+        <property name="minimum">
+         <double>0.000000000000000</double>
+        </property>
+        <property name="maximum">
+         <double>100000.000000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QLabel" name="label_descricao">
+        <property name="text">
+         <string>Descrição</string>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="1">
+       <widget class="QLineEdit" name="edit_descricao"/>
+      </item>
+      <item row="4" column="0">
+       <widget class="QLabel" name="label_vigencia">
+        <property name="text">
+         <string>Vigente a partir de</string>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="1">
+       <widget class="QDateEdit" name="date_vigencia">
+        <property name="calendarPopup">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="0" colspan="2">
+       <widget class="QPushButton" name="btn_adicionar">
+        <property name="text">
+         <string>Adicionar Regra</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="group_lista">
+     <property name="title">
+      <string>Regras Cadastradas</string>
+     </property>
+     <layout class="QVBoxLayout" name="layout_lista">
+      <item>
+       <widget class="QListWidget" name="lista_regras"/>
+      </item>
+      <item>
+       <widget class="QPushButton" name="btn_remover">
+        <property name="text">
+         <string>Remover Selecionada</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="label_status">
+     <property name="text">
+      <string>Cadastre pelo menos 2 regras para continuar.</string>
+     </property>
+     <property name="alignment">
+      <set>Qt::AlignCenter</set>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="button_box">
+     <property name="orientation">
+      <enum>Qt::Horizontal</enum>
+     </property>
+     <property name="standardButtons">
+      <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok</set>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

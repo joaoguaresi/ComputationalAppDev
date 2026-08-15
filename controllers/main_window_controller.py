@@ -1,4 +1,5 @@
 from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QTableWidgetItem
 import pyqtgraph as pg
 
 from controllers.comandos_controller import ComandosController
@@ -26,8 +27,10 @@ class MainWindowController:
 
         self.comandos = ComandosController(self.janela, self.ui, self.disjuntor)
         self.comandos.estado_disjuntor_alterado.connect(self._atualizar_disjuntor)
+        self.comandos.evento_registrado.connect(self._registrar_linha_historico)
 
         self._configurar_grafico()
+        self._configurar_tabela_historico()
         self._redesenhar_grafico()
         self._atualizar_indicadores(self.medicoes[-1])
         self._atualizar_disjuntor()
@@ -51,6 +54,18 @@ class MainWindowController:
         inicio = series["segundos"][0]
         eixo_x = [segundo - inicio for segundo in series["segundos"]]
         self.curva_potencia.setData(eixo_x, series["potencia"])
+
+    def _configurar_tabela_historico(self):
+        self.ui.tabela_historico.setColumnWidth(0, 150)
+        self.ui.tabela_historico.setColumnWidth(1, 180)
+
+    def _registrar_linha_historico(self, evento):
+        tabela = self.ui.tabela_historico
+        linha = 0
+        tabela.insertRow(linha)
+        for coluna, valor in enumerate(evento.get_linha_tabela()):
+            item = QTableWidgetItem(str(valor))
+            tabela.setItem(linha, coluna, item)
 
     def _atualizar_indicadores(self, medicao):
         dados = medicao.get_dados()

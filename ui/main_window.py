@@ -15,10 +15,10 @@ from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QCursor,
     QFont, QFontDatabase, QGradient, QIcon,
     QImage, QKeySequence, QLinearGradient, QPainter,
     QPalette, QPixmap, QRadialGradient, QTransform)
-from PySide6.QtWidgets import (QApplication, QComboBox, QDoubleSpinBox, QGridLayout,
-    QGroupBox, QHBoxLayout, QLCDNumber, QLabel,
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDoubleSpinBox, QGridLayout,
+    QGroupBox, QHBoxLayout, QHeaderView, QLCDNumber, QLabel,
     QMainWindow, QPushButton, QSizePolicy, QSlider,
-    QSpinBox, QVBoxLayout, QWidget)
+    QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 from pyqtgraph import PlotWidget
 
@@ -175,6 +175,13 @@ class Ui_JanelaPrincipal(object):
 
         self.grid_comandos.addWidget(self.btn_religar_disjuntor, 4, 0, 1, 2)
 
+        self.btn_regras_alerta = QPushButton(self.group_comandos)
+        self.btn_regras_alerta.setObjectName(u"btn_regras_alerta")
+        self.btn_regras_alerta.setMinimumSize(QSize(0, 34))
+        self.btn_regras_alerta.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+
+        self.grid_comandos.addWidget(self.btn_regras_alerta, 5, 0, 1, 2)
+
 
         self.layout_paineis.addWidget(self.group_comandos)
 
@@ -262,6 +269,24 @@ class Ui_JanelaPrincipal(object):
 
         self.layout_principal.addWidget(self.group_grafico)
 
+        self.group_historico = QGroupBox(self.central_widget)
+        self.group_historico.setObjectName(u"group_historico")
+        self.layout_historico = QVBoxLayout(self.group_historico)
+        self.layout_historico.setObjectName(u"layout_historico")
+        self.tabela_historico = QTableWidget(self.group_historico)
+        self.tabela_historico.setObjectName(u"tabela_historico")
+        self.tabela_historico.setColumnCount(4)
+        self.tabela_historico.setHorizontalHeaderLabels(["Data/Hora", "Tipo de Evento", "Descrição", "Valor Medido"])
+        self.tabela_historico.horizontalHeader().setStretchLastSection(True)
+        self.tabela_historico.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.tabela_historico.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tabela_historico.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tabela_historico.setMinimumSize(QSize(0, 180))
+
+        self.layout_historico.addWidget(self.tabela_historico)
+
+        self.layout_principal.addWidget(self.group_historico)
+
         JanelaPrincipal.setCentralWidget(self.central_widget)
 
         self.retranslateUi(JanelaPrincipal)
@@ -286,6 +311,7 @@ class Ui_JanelaPrincipal(object):
         self.label_alerta_status.setText(QCoreApplication.translate("JanelaPrincipal", u"Prote\u00e7\u00e3o: dentro do limite", None))
         self.btn_corte_emergencia.setText(QCoreApplication.translate("JanelaPrincipal", u"CORTE DE EMERG\u00caNCIA", None))
         self.btn_religar_disjuntor.setText(QCoreApplication.translate("JanelaPrincipal", u"Religar disjuntor", None))
+        self.btn_regras_alerta.setText(QCoreApplication.translate("JanelaPrincipal", u"Configurar Regras de Alerta", None))
         self.group_serial.setTitle(QCoreApplication.translate("JanelaPrincipal", u"Configura\u00e7\u00e3o da Conex\u00e3o Serial", None))
         self.label_porta.setText(QCoreApplication.translate("JanelaPrincipal", u"Porta COM", None))
         self.label_baudrate.setText(QCoreApplication.translate("JanelaPrincipal", u"Baud Rate", None))
@@ -295,5 +321,6 @@ class Ui_JanelaPrincipal(object):
         self.btn_desconectar.setText(QCoreApplication.translate("JanelaPrincipal", u"Desconectar", None))
         self.label_serial_status.setText(QCoreApplication.translate("JanelaPrincipal", u"DESCONECTADO", None))
         self.group_grafico.setTitle(QCoreApplication.translate("JanelaPrincipal", u"Gr\u00e1fico de Tend\u00eancia", None))
+        self.group_historico.setTitle(QCoreApplication.translate("JanelaPrincipal", u"Hist\u00f3rico de Eventos", None))
     # retranslateUi
 
