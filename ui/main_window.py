@@ -295,8 +295,8 @@ class Ui_JanelaPrincipal(object):
     # setupUi
 
     def retranslateUi(self, JanelaPrincipal):
-        JanelaPrincipal.setWindowTitle(QCoreApplication.translate("JanelaPrincipal", u"Smart Grid \u2014 Monitor de Consumo de Energia", None))
-        self.label_titulo.setText(QCoreApplication.translate("JanelaPrincipal", u"Monitor de Consumo de Energia \u2014 Smart Grid", None))
+        JanelaPrincipal.setWindowTitle(QCoreApplication.translate("JanelaPrincipal", u"Smart Grid: Monitor de Consumo de Energia", None))
+        self.label_titulo.setText(QCoreApplication.translate("JanelaPrincipal", u"Monitor de Consumo de Energia - Smart Grid", None))
         self.label_tensao_titulo.setText(QCoreApplication.translate("JanelaPrincipal", u"Tens\u00e3o (V)", None))
         self.label_corrente_titulo.setText(QCoreApplication.translate("JanelaPrincipal", u"Corrente (A)", None))
         self.label_potencia_titulo.setText(QCoreApplication.translate("JanelaPrincipal", u"Pot\u00eancia (W)", None))

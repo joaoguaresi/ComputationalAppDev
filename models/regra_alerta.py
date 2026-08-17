@@ -30,14 +30,16 @@ class RegraAlerta:
             return True
         return False
 
-    def avaliar(self, medicao) -> bool:
+    def extrair_valor(self, medicao) -> float:
+        """Valor da medição correspondente à grandeza monitorada pela regra."""
         if self.grandeza == RegraAlerta.TENSAO:
-            valor = medicao.tensao_v
-        elif self.grandeza == RegraAlerta.CORRENTE:
-            valor = medicao.corrente_a
-        else:
-            valor = medicao.calcular_potencia()
-        return self.foi_violada(valor)
+            return medicao.tensao_v
+        if self.grandeza == RegraAlerta.CORRENTE:
+            return medicao.corrente_a
+        return medicao.calcular_potencia()
+
+    def avaliar(self, medicao) -> bool:
+        return self.foi_violada(self.extrair_valor(medicao))
 
     def get_unidade(self) -> str:
         return RegraAlerta.UNIDADES[self.grandeza]

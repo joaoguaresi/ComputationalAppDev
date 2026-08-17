@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QDialogButtonBox, QListWidgetItem, QMessageBox
+from PySide6.QtWidgets import QMessageBox
 
 from models.regra_alerta import RegraAlerta
 from ui.regras_alerta_dialog import Ui_RegrasAlertaDialog
@@ -72,12 +72,11 @@ class RegrasAlertaController:
     def _redesenhar_lista(self):
         self.ui.lista_regras.clear()
         for regra in self.regras:
-            dados = regra.get_dados()
-            texto = f"{dados['descricao']} — máx. {dados['limite_max']:.2f} {dados['unidade']}"
-            if dados["limite_min"] is not None:
-                texto += f" / mín. {dados['limite_min']:.2f} {dados['unidade']}"
-            item = QListWidgetItem(texto)
-            self.ui.lista_regras.addItem(item)
+            unidade = regra.get_unidade()
+            texto = f"{regra.descricao}: máx. {regra.limite_max:.2f} {unidade}"
+            if regra.limite_min is not None:
+                texto += f" / mín. {regra.limite_min:.2f} {unidade}"
+            self.ui.lista_regras.addItem(texto)
 
         total = len(self.regras)
         if total < RegrasAlertaController.MINIMO_REGRAS:

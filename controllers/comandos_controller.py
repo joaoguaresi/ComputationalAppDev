@@ -130,24 +130,24 @@ class ComandosController(QObject):
         if self.medicao_atual is not None:
             self._avaliar_regras_adicionais(self.medicao_atual)
 
-    def get_regras(self) -> list:
-        return list(self.regras_adicionais)
-
     def _avaliar_regras_adicionais(self, medicao):
+        """Registra um evento a cada travessia normal -> violada de uma regra."""
         for indice, regra in enumerate(self.regras_adicionais):
-            violada = regra.avaliar(medicao)
-            if violada and indice not in self._regras_violadas:
-                self._regras_violadas.add(indice)
-                if regra.grandeza == RegraAlerta.CORRENTE:
-                    valor = medicao.corrente_a
-                elif regra.grandeza == RegraAlerta.TENSAO:
-                    valor = medicao.tensao_v
-                else:
-                    valor = medicao.calcular_potencia()
-                descricao = f"{regra.descricao} — limite de {regra.limite_max:.2f} {regra.get_unidade()} ultrapassado"
-                self._registrar_evento(EventoHistorico.LIMITE_EXCEDIDO, descricao, valor, regra.get_unidade())
-            elif not violada and indice in self._regras_violadas:
+            valor = regra.extrair_valor(medicao)
+
+            if not regra.foi_violada(valor):
                 self._regras_violadas.discard(indice)
+                continue
+            if indice in self._regras_violadas:
+                continue
+
+            self._regras_violadas.add(indice)
+            unidade = regra.get_unidade()
+            descricao = (
+                f"{regra.descricao}: limite de "
+                f"{regra.limite_max:.2f} {unidade} ultrapassado"
+            )
+            self._registrar_evento(EventoHistorico.LIMITE_EXCEDIDO, descricao, valor, unidade)
 
     def _classificar_potencia(self, potencia) -> str:
         if self.regra_setpoint.foi_violada(potencia):
@@ -179,7 +179,7 @@ class ComandosController(QObject):
         limite = self.regra_setpoint.limite_max
 
         if nivel == ComandosController.CARGA_DESLIGADA:
-            return "Disjuntor aberto — carga desligada (RELAY_OFF)"
+            return "Disjuntor aberto - carga desligada (RELAY_OFF)"
         if nivel == ComandosController.CRITICO:
             return f"ALERTA: {potencia:.0f} W acima do setpoint de {limite:.0f} W"
         if nivel == ComandosController.ATENCAO:
@@ -212,7 +212,7 @@ class ComandosController(QObject):
         if dialog.exec() == QDialog.Accepted:
             self.aplicar_regras(regras_dialog.get_regras())
             self._registrar_evento(
-                "Regras de Alerta",
+                EventoHistorico.REGRAS_ALERTA,
                 f"{len(self.regras_adicionais)} regra(s) de alerta atualizada(s) pelo operador",
             )
 
@@ -243,7 +243,7 @@ class ComandosController(QObject):
         )
         self._registrar_evento(
             EventoHistorico.MUDANCA_DISJUNTOR,
-            "Disjuntor aberto — proteção ativada",
+            "Disjuntor aberto - proteção ativada",
         )
 
         self._concluir_mudanca_disjuntor()
@@ -269,7 +269,7 @@ class ComandosController(QObject):
         self.disjuntor.fechar()
         self._registrar_evento(
             EventoHistorico.MUDANCA_DISJUNTOR,
-            "Disjuntor fechado — operação normal restabelecida",
+            "Disjuntor fechado - operação normal restabelecida",
         )
         self._concluir_mudanca_disjuntor()
 
@@ -319,7 +319,7 @@ class ComandosController(QObject):
 
         self._atualizar_status_serial()
         self._registrar_evento(
-            "Conexão Serial",
+            EventoHistorico.CONEXAO_SERIAL,
             f"Conexão simulada aberta em {self.serial.porta} "
             f"({self.serial.baud_rate} bps, timeout {self.serial.timeout_ms} ms)",
         )
@@ -327,7 +327,9 @@ class ComandosController(QObject):
     def _ao_desconectar(self):
         self.serial.desconectar()
         self._atualizar_status_serial()
-        self._registrar_evento("Conexão Serial", "Conexão simulada encerrada pelo operador")
+        self._registrar_evento(
+            EventoHistorico.CONEXAO_SERIAL, "Conexão simulada encerrada pelo operador"
+        )
 
     def _atualizar_status_serial(self):
         dados = self.serial.get_dados()

@@ -64,7 +64,7 @@ class MainWindowController:
         linha = 0
         tabela.insertRow(linha)
         for coluna, valor in enumerate(evento.get_linha_tabela()):
-            item = QTableWidgetItem(str(valor))
+            item = QTableWidgetItem(valor)
             tabela.setItem(linha, coluna, item)
 
     def _atualizar_indicadores(self, medicao):

@@ -5,6 +5,8 @@ class EventoHistorico:
     CORTE_EMERGENCIA = "Corte de Emergência"
     MUDANCA_DISJUNTOR = "Mudança de Estado do Disjuntor"
     LIMITE_EXCEDIDO = "Limite Excedido"
+    REGRAS_ALERTA = "Regras de Alerta"
+    CONEXAO_SERIAL = "Conexão Serial"
 
     def __init__(self, tipo, descricao, valor=None, unidade="", timestamp=None):
         self.tipo = tipo

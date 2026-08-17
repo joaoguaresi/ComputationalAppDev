@@ -62,7 +62,7 @@ class ConfiguracaoSerial:
 
     def get_texto_status(self) -> str:
         if self.esta_conectado():
-            return f"CONECTADO — {self.porta} @ {self.baud_rate} bps"
+            return f"CONECTADO: {self.porta} @ {self.baud_rate} bps"
         return "DESCONECTADO"
 
     def get_cor_status(self) -> str:
