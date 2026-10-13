@@ -3,9 +3,12 @@ import sys
 from PySide6.QtWidgets import QApplication, QMainWindow
 
 from controllers.main_window_controller import MainWindowController
+from models.config_manager import ConfigManager
 
 
 def main():
+    ConfigManager.carregar()
+
     app = QApplication(sys.argv)
     janela = QMainWindow()
     controller = MainWindowController(janela)
