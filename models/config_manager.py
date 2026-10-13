@@ -30,7 +30,8 @@ class ConfigManager:
     def carregar(cls):
         """Lê o config.json. Chaves que faltarem no arquivo recebem o valor default."""
         if not os.path.exists(cls.CAMINHO):
-            cls._dados = dict(cls.DEFAULTS)
+            logger.warning("Arquivo config.json não encontrado. Criando com os valores padrão.")
+            cls._restaurar_defaults()
             return
 
         with open(cls.CAMINHO, encoding="utf-8") as arquivo:
@@ -52,6 +53,12 @@ class ConfigManager:
         cls._dados[chave] = valor
         cls._salvar()
         logger.info("Configuração '%s' alterada para %s.", chave, valor)
+
+    @classmethod
+    def _restaurar_defaults(cls):
+        """Volta todas as configurações para o padrão e grava o arquivo."""
+        cls._dados = dict(cls.DEFAULTS)
+        cls._salvar()
 
     @classmethod
     def _salvar(cls):

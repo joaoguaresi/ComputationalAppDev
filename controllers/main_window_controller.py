@@ -1,4 +1,4 @@
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QTableWidgetItem
 import pyqtgraph as pg
 
@@ -12,14 +12,13 @@ from ui.main_window import Ui_JanelaPrincipal
 class MainWindowController:
     LIMITE_PONTOS_GRAFICO = 120
     INTERVALO_SIMULACAO_MS = 2000
+    ALTURA_MINIMA_TABELA = 120
 
     def __init__(self, janela):
         self.janela = janela
         self.ui = Ui_JanelaPrincipal()
         self.ui.setupUi(janela)
-        self.ui.layout_principal.setStretchFactor(self.ui.group_grafico, 1)
-        for coluna in range(4):
-            self.ui.grid_indicadores.setColumnStretch(coluna, 1)
+        self._ajustar_layout()
 
         self.simulador = SimuladorTelemetria()
         self.disjuntor = Disjuntor()
@@ -39,6 +38,15 @@ class MainWindowController:
         self.timer = QTimer(self.janela)
         self.timer.timeout.connect(self._simular_nova_medicao)
         self.timer.start(self.INTERVALO_SIMULACAO_MS)
+
+    def _ajustar_layout(self):
+        """Abre a janela maximizada e entrega ao gráfico a maior parte da altura livre."""
+        self.janela.setWindowState(Qt.WindowMaximized)
+        self.ui.tabela_historico.setMinimumHeight(self.ALTURA_MINIMA_TABELA)
+        self.ui.layout_principal.setStretchFactor(self.ui.group_grafico, 3)
+        self.ui.layout_principal.setStretchFactor(self.ui.group_historico, 1)
+        for coluna in range(4):
+            self.ui.grid_indicadores.setColumnStretch(coluna, 1)
 
     def _configurar_grafico(self):
         grafico = self.ui.grafico_tendencia
