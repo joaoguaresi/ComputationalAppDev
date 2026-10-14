@@ -15,3 +15,13 @@ env/
 # Sistema operacional
 .DS_Store
 Thumbs.db
+
+# Arquivos gerados em execução (recriados automaticamente pela aplicação)
+data/*.db
+data/config.json
+logs/*.log
+
+# Arquivos temporários do SQLite
+*.db-wal
+*.db-journal
+*.db-shm

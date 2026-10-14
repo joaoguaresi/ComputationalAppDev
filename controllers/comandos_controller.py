@@ -1,10 +1,15 @@
+import logging
+
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QDialog, QMessageBox
 
 from controllers.regras_alerta_controller import RegrasAlertaController
+from models.config_manager import ConfigManager
 from models.configuracao_serial import ConfiguracaoSerial
 from models.evento_historico import EventoHistorico
 from models.regra_alerta import RegraAlerta
+
+logger = logging.getLogger("smartgrid")
 
 
 class ComandosController(QObject):
@@ -73,13 +78,30 @@ class ComandosController(QObject):
     # ------------------------------------------------------------------
 
     def _preencher_painel_serial(self):
+        """Preenche as opções do painel e seleciona a porta e o baud rate salvos no config.json."""
         self.ui.combo_porta.addItems(ConfiguracaoSerial.listar_portas())
         for baud_rate in ConfiguracaoSerial.BAUD_RATES:
             self.ui.combo_baudrate.addItem(str(baud_rate), baud_rate)
 
+        porta = ConfigManager.get("porta_com")
+        baud_rate = ConfigManager.get("baud_rate")
+        self._selecionar_item(self.ui.combo_porta, self.ui.combo_porta.findText(str(porta)), "Porta COM", porta)
+        self._selecionar_item(self.ui.combo_baudrate, self.ui.combo_baudrate.findData(baud_rate), "Baud rate", baud_rate)
+
         self.ui.spin_timeout.setValue(self.serial.timeout_ms)
         self.serial.porta = self.ui.combo_porta.currentText()
         self.serial.baud_rate = self.ui.combo_baudrate.currentData()
+
+    @staticmethod
+    def _selecionar_item(combo, indice, campo, valor_salvo):
+        """Seleciona o item salvo; se ele não existir na lista, mantém o primeiro e avisa no log."""
+        if indice < 0:
+            logger.warning(
+                "%s '%s' do config.json não está disponível. Usando %s.",
+                campo, valor_salvo, combo.itemText(0),
+            )
+            indice = 0
+        combo.setCurrentIndex(indice)
 
     def _conectar_sinais(self):
         self.ui.spin_setpoint.valueChanged.connect(self._ao_alterar_setpoint)
@@ -301,15 +323,21 @@ class ComandosController(QObject):
 
     def _ao_alterar_porta(self, porta):
         self.serial.porta = porta
+        ConfigManager.set("porta_com", porta)
 
     def _ao_alterar_baudrate(self, indice):
         self.serial.baud_rate = self.ui.combo_baudrate.itemData(indice)
+        ConfigManager.set("baud_rate", self.serial.baud_rate)
 
     def _ao_alterar_timeout(self, valor):
         self.serial.timeout_ms = valor
 
     def _ao_conectar(self):
         if not self.serial.conectar():
+            logger.warning(
+                "Configuração serial inválida: porta %s, %s bps, timeout %s ms.",
+                self.serial.porta, self.serial.baud_rate, self.serial.timeout_ms,
+            )
             QMessageBox.warning(
                 self.janela,
                 "Configuração inválida",
@@ -318,6 +346,7 @@ class ComandosController(QObject):
             return
 
         self._atualizar_status_serial()
+        logger.info("Conexão serial simulada aberta em %s @ %s bps.", self.serial.porta, self.serial.baud_rate)
         self._registrar_evento(
             EventoHistorico.CONEXAO_SERIAL,
             f"Conexão simulada aberta em {self.serial.porta} "
@@ -327,6 +356,7 @@ class ComandosController(QObject):
     def _ao_desconectar(self):
         self.serial.desconectar()
         self._atualizar_status_serial()
+        logger.info("Conexão serial simulada encerrada.")
         self._registrar_evento(
             EventoHistorico.CONEXAO_SERIAL, "Conexão simulada encerrada pelo operador"
         )
