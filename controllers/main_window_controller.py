@@ -1,3 +1,6 @@
+import logging
+from collections import deque
+
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QTableWidgetItem
 import pyqtgraph as pg
@@ -8,9 +11,11 @@ from models.medicao import Medicao
 from models.simulador_telemetria import SimuladorTelemetria
 from ui.main_window import Ui_JanelaPrincipal
 
+logger = logging.getLogger("smartgrid")
+
 
 class MainWindowController:
-    LIMITE_PONTOS_GRAFICO = 120
+    AMOSTRAS_GRAFICO = 60
     INTERVALO_SIMULACAO_MS = 2000
     ALTURA_MINIMA_TABELA = 120
 
@@ -22,7 +27,7 @@ class MainWindowController:
 
         self.simulador = SimuladorTelemetria()
         self.disjuntor = Disjuntor()
-        self.medicoes = self.simulador.gerar_historico(intervalo_segundos=self.INTERVALO_SIMULACAO_MS / 1000)
+        self.medicoes = self._pre_carregar_medicoes()
 
         self.comandos = ComandosController(self.janela, self.ui, self.disjuntor)
         self.comandos.estado_disjuntor_alterado.connect(self._atualizar_disjuntor)
@@ -48,20 +53,35 @@ class MainWindowController:
         for coluna in range(4):
             self.ui.grid_indicadores.setColumnStretch(coluna, 1)
 
+    def _pre_carregar_medicoes(self):
+        """Gera o histórico inicial com a janela inteira do gráfico já preenchida.
+
+        A deque tem tamanho máximo fixo: cada nova medição empurra a mais antiga
+        para fora, então o gráfico desliza sem nunca ficar vazio ou pela metade.
+        """
+        intervalo = self.INTERVALO_SIMULACAO_MS / 1000
+        historico = self.simulador.gerar_historico(self.AMOSTRAS_GRAFICO, intervalo)
+        logger.info("Gráfico de telemetria pré-carregado com %d amostras.", len(historico))
+        return deque(historico, maxlen=self.AMOSTRAS_GRAFICO)
+
     def _configurar_grafico(self):
         grafico = self.ui.grafico_tendencia
         grafico.setBackground("w")
         grafico.showGrid(x=True, y=True, alpha=0.3)
-        grafico.setLabel("bottom", "Tempo (s)")
+        grafico.setLabel("bottom", "Tempo em relação à última leitura (s)")
         grafico.setLabel("left", "Potência (W)")
+
+        # Eixo X fixo: a amostra mais recente fica em 0 s e as anteriores à esquerda.
+        intervalo = self.INTERVALO_SIMULACAO_MS / 1000
+        inicio = -(self.AMOSTRAS_GRAFICO - 1) * intervalo
+        self.eixo_x = [inicio + indice * intervalo for indice in range(self.AMOSTRAS_GRAFICO)]
+        grafico.setXRange(inicio, 0, padding=0)
 
         self.curva_potencia = grafico.plot(pen=pg.mkPen("#9B59B6", width=2))
 
     def _redesenhar_grafico(self):
-        series = SimuladorTelemetria.extrair_series(self.medicoes)
-        inicio = series["segundos"][0]
-        eixo_x = [segundo - inicio for segundo in series["segundos"]]
-        self.curva_potencia.setData(eixo_x, series["potencia"])
+        potencias = [medicao.calcular_potencia() for medicao in self.medicoes]
+        self.curva_potencia.setData(self.eixo_x, potencias)
 
     def _configurar_tabela_historico(self):
         self.ui.tabela_historico.setColumnWidth(0, 150)
@@ -95,8 +115,6 @@ class MainWindowController:
             medicao = Medicao(medicao.tensao_v, 0.0, medicao.timestamp)
 
         self.medicoes.append(medicao)
-        if len(self.medicoes) > self.LIMITE_PONTOS_GRAFICO:
-            self.medicoes = self.medicoes[-self.LIMITE_PONTOS_GRAFICO:]
 
         self._redesenhar_grafico()
         self._atualizar_indicadores(medicao)
