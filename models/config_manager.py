@@ -34,8 +34,18 @@ class ConfigManager:
             cls._restaurar_defaults()
             return
 
-        with open(cls.CAMINHO, encoding="utf-8") as arquivo:
-            lidos = json.load(arquivo)
+        try:
+            with open(cls.CAMINHO, encoding="utf-8") as arquivo:
+                lidos = json.load(arquivo)
+        except (json.JSONDecodeError, UnicodeDecodeError) as erro:
+            logger.error("Arquivo config.json corrompido (%s). Restaurando os valores padrão.", erro)
+            cls._restaurar_defaults()
+            return
+
+        if not isinstance(lidos, dict):
+            logger.error("Arquivo config.json não contém um objeto JSON. Restaurando os valores padrão.")
+            cls._restaurar_defaults()
+            return
 
         cls._dados = {**cls.DEFAULTS, **lidos}
         logger.info("Configurações carregadas de data/config.json.")
