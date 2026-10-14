@@ -17,7 +17,11 @@ logger = logging.getLogger("smartgrid")
 class MainWindowController:
     AMOSTRAS_GRAFICO = 60
     INTERVALO_SIMULACAO_MS = 2000
-    ALTURA_MINIMA_TABELA = 120
+    ALTURA_MINIMA_GRAFICO = 180
+    ALTURA_MINIMA_TABELA = 80
+    ALTURA_INDICADORES = 44
+    ALTURA_BOTOES = 26
+    ALTURA_BOTAO_CORTE = 34
 
     def __init__(self, janela):
         self.janela = janela
@@ -46,12 +50,41 @@ class MainWindowController:
 
     def _ajustar_layout(self):
         """Abre a janela maximizada e entrega ao gráfico a maior parte da altura livre."""
+        ui = self.ui
         self.janela.setWindowState(Qt.WindowMaximized)
-        self.ui.tabela_historico.setMinimumHeight(self.ALTURA_MINIMA_TABELA)
-        self.ui.layout_principal.setStretchFactor(self.ui.group_grafico, 3)
-        self.ui.layout_principal.setStretchFactor(self.ui.group_historico, 1)
+        self._compactar_parte_superior()
+
+        ui.grafico_tendencia.setMinimumHeight(self.ALTURA_MINIMA_GRAFICO)
+        ui.tabela_historico.setMinimumHeight(self.ALTURA_MINIMA_TABELA)
+        ui.layout_principal.setStretchFactor(ui.group_grafico, 2)
+        ui.layout_principal.setStretchFactor(ui.group_historico, 1)
         for coluna in range(4):
-            self.ui.grid_indicadores.setColumnStretch(coluna, 1)
+            ui.grid_indicadores.setColumnStretch(coluna, 1)
+
+    def _compactar_parte_superior(self):
+        """Reduz espaçamentos e alturas dos indicadores e painéis para sobrar espaço ao gráfico."""
+        ui = self.ui
+        ui.label_titulo.setStyleSheet("font-size: 13pt; font-weight: bold;")
+        ui.layout_principal.setSpacing(6)
+        ui.layout_principal.setContentsMargins(10, 6, 10, 6)
+        ui.grid_indicadores.setVerticalSpacing(2)
+
+        for layout in (ui.grid_comandos, ui.grid_serial, ui.layout_grafico, ui.layout_historico):
+            layout.setContentsMargins(6, 4, 6, 6)
+        for grid in (ui.grid_comandos, ui.grid_serial):
+            grid.setVerticalSpacing(4)
+
+        # "Religar disjuntor" e "Configurar Regras de Alerta" lado a lado, economizando uma linha.
+        for coluna, botao in enumerate((ui.btn_religar_disjuntor, ui.btn_regras_alerta)):
+            ui.grid_comandos.removeWidget(botao)
+            ui.grid_comandos.addWidget(botao, 4, coluna)
+
+        for widget in (ui.lcd_tensao, ui.lcd_corrente, ui.lcd_potencia, ui.label_disjuntor_status):
+            widget.setMinimumHeight(self.ALTURA_INDICADORES)
+        for widget in (ui.btn_religar_disjuntor, ui.btn_regras_alerta, ui.btn_conectar, ui.btn_desconectar,
+                       ui.label_alerta_status, ui.label_serial_status):
+            widget.setMinimumHeight(self.ALTURA_BOTOES)
+        ui.btn_corte_emergencia.setMinimumHeight(self.ALTURA_BOTAO_CORTE)
 
     def _pre_carregar_medicoes(self):
         """Gera o histórico inicial com a janela inteira do gráfico já preenchida.
