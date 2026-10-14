@@ -45,6 +45,8 @@ Essa adaptação **não faz parte da entrega A1/1** e será tratada junto com a 
 /ui            arquivos .ui do Qt Designer e telas compiladas .py
 /controllers   lógica das janelas e eventos (Signals & Slots)
 /models        classes de dados e entidades
+/data          config.json (gerado automaticamente na primeira execução)
+/logs          smartgrid.log (gerado automaticamente)
 main.py        ponto de entrada da aplicação
 ```
 
@@ -55,7 +57,7 @@ git clone https://github.com/joaoguaresi/ComputationalAppDev
 cd ComputationalAppDev
 python -m venv .venv
 source .venv/bin/activate
-pip install pyside6 pyqtgraph
+pip install -r requirements.txt
 python main.py
 ```
 

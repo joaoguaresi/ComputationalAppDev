@@ -24,15 +24,19 @@ def configurar_logging():
 
 
 def main():
+    # O log vem antes do config para que avisos e erros da leitura do config.json já fiquem no arquivo.
     configurar_logging()
     logger.info("Aplicação iniciada.")
     ConfigManager.carregar()
 
     app = QApplication(sys.argv)
     janela = QMainWindow()
-    controller = MainWindowController(janela)
+    controller = MainWindowController(janela)  # mantém o controller vivo enquanto a janela existir
     janela.show()
-    sys.exit(app.exec())
+
+    codigo_saida = app.exec()
+    logger.info("Aplicação encerrada.")
+    sys.exit(codigo_saida)
 
 
 if __name__ == "__main__":
