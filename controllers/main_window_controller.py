@@ -7,6 +7,8 @@ import pyqtgraph as pg
 
 from controllers.comandos_controller import ComandosController
 from models.disjuntor import Disjuntor
+from models.dispositivo import Dispositivo
+from models.dispositivo_repository import DispositivoRepository
 from models.medicao import Medicao
 from models.simulador_telemetria import SimuladorTelemetria
 from ui.main_window import Ui_JanelaPrincipal
@@ -30,7 +32,7 @@ class MainWindowController:
         self._ajustar_layout()
 
         self.simulador = SimuladorTelemetria()
-        self.disjuntor = Disjuntor()
+        self.disjuntor = self._carregar_disjuntor()
         self.medicoes = self._pre_carregar_medicoes()
 
         self.comandos = ComandosController(self.janela, self.ui, self.disjuntor)
@@ -86,6 +88,19 @@ class MainWindowController:
             widget.setMinimumHeight(self.ALTURA_BOTOES)
         ui.btn_corte_emergencia.setMinimumHeight(self.ALTURA_BOTAO_CORTE)
 
+    @staticmethod
+    def _carregar_disjuntor():
+        """Cria o disjuntor com o status gravado no banco, para o dashboard abrir no
+        último estado conhecido em vez de sempre FECHADO."""
+        tag = Dispositivo.TAG_DISJUNTOR_PRINCIPAL
+        dispositivo = DispositivoRepository.buscar_por_tag(tag)
+        if dispositivo is None:
+            logger.warning("Disjuntor %s não encontrado no banco. Iniciando como FECHADO.", tag)
+            return Disjuntor()
+
+        logger.info("Estado do disjuntor %s carregado do banco: %s.", tag, dispositivo.status)
+        return Disjuntor(dispositivo.status, dispositivo.ultima_atualizacao)
+
     def _pre_carregar_medicoes(self):
         """Gera o histórico inicial com a janela inteira do gráfico já preenchida.
 
@@ -137,6 +152,7 @@ class MainWindowController:
     def _atualizar_disjuntor(self):
         dados = self.disjuntor.get_dados()
         self.ui.label_disjuntor_status.setText(dados["texto"])
+        self.ui.label_disjuntor_status.setToolTip(f"Última alteração: {dados['data_hora']}")
         self.ui.label_disjuntor_status.setStyleSheet(
             f"background-color: {dados['cor']}; color: white; "
             "border-radius: 6px; padding: 6px; font-weight: bold;"

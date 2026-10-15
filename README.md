@@ -38,17 +38,30 @@ Essa adaptação **não faz parte da entrega A1/1** e será tratada junto com a 
 - PySide6 (Qt for Python)
 - Qt Designer
 - PyQtGraph ou Matplotlib (gráfico de tendência)
+- SQLite (módulo sqlite3 da biblioteca padrão do Python)
 
 ## Estrutura do projeto
 
 ```
 /ui            arquivos .ui do Qt Designer e telas compiladas .py
 /controllers   lógica das janelas e eventos (Signals & Slots)
-/models        classes de dados e entidades
-/data          config.json (gerado automaticamente na primeira execução)
+/models        classes de dados, entidades e repositórios de acesso ao banco
+/database      conexão com o SQLite (Database) e esquema das tabelas
+/data          config.json e smartgrid.db (gerados automaticamente na primeira execução)
 /logs          smartgrid.log (gerado automaticamente)
 main.py        ponto de entrada da aplicação
 ```
+
+## Banco de dados
+
+O banco SQLite `data/smartgrid.db` é criado automaticamente na primeira execução pelo `Database.init_db()`, chamado no `main.py`. Toda conexão abre com timeout de 5 s e com `PRAGMA foreign_keys = ON`, que no SQLite precisa ser ativado em cada conexão.
+
+| Tabela | Colunas | Restrições |
+|---|---|---|
+| `dispositivos` | id, tag, tipo, status, ultima_atualizacao | `id` PRIMARY KEY; `tag` UNIQUE NOT NULL; `status` NOT NULL com CHECK (ABERTO ou FECHADO); `tipo` e `ultima_atualizacao` NOT NULL |
+| `eventos` | id, data_hora, tipo_evento, valor_medido, descricao, dispositivo_id | `id` PRIMARY KEY; `data_hora`, `tipo_evento` e `descricao` NOT NULL; `dispositivo_id` FOREIGN KEY para `dispositivos(id)` |
+
+Na criação, o disjuntor principal (`DJ-PRINCIPAL`) e o relé de emergência (`RL-EMERGENCIA`) são cadastrados com `INSERT OR IGNORE`. Por isso, nas execuções seguintes o status gravado é mantido. O dashboard abre mostrando o estado do disjuntor lido dessa tabela.
 
 ## Como executar
 

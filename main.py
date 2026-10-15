@@ -2,9 +2,10 @@ import logging
 import os
 import sys
 
-from PySide6.QtWidgets import QApplication, QMainWindow
+from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 
 from controllers.main_window_controller import MainWindowController
+from database.connection import Database
 from models.config_manager import ConfigManager
 
 PASTA_LOGS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
@@ -30,6 +31,17 @@ def main():
     ConfigManager.carregar()
 
     app = QApplication(sys.argv)
+
+    # O banco é iniciado depois da QApplication para que uma falha possa ser avisada em um QMessageBox.
+    if not Database.init_db():
+        QMessageBox.critical(
+            None,
+            "Banco de dados",
+            "Não foi possível abrir o banco de dados data/smartgrid.db.\n"
+            "Os detalhes do erro estão em logs/smartgrid.log.",
+        )
+        sys.exit(1)
+
     janela = QMainWindow()
     controller = MainWindowController(janela)  # mantém o controller vivo enquanto a janela existir
     janela.show()
