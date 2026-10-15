@@ -13,14 +13,14 @@ logger = logging.getLogger("smartgrid")
 
 
 class ComandosController(QObject):
-    """Comandos do operador, proteção local por setpoint e painel serial.
+    """Proteção local por setpoint, regras de alerta e painel serial.
 
-    Nesta etapa o comando RELAY_OFF e a conexão serial são simulados: o corte de
-    emergência age sobre o model Disjuntor e o painel serial só atualiza o status
-    visual, sem comunicação real com o microcontrolador.
+    O corte de emergência e o religamento ficam no CorteController. Os eventos gerados
+    aqui são gravados no banco pelo EventosController. Nesta etapa a conexão serial é
+    simulada: o painel só atualiza o status visual, sem comunicação real com o
+    microcontrolador.
     """
 
-    COMANDO_RELAY_OFF = "RELAY_OFF"
     FATOR_ATENCAO = 0.9
 
     NORMAL = "NORMAL"
@@ -43,15 +43,14 @@ class ComandosController(QObject):
         CARGA_DESLIGADA: "#7F8C8D",
     }
 
-    evento_registrado = Signal(object)
-    estado_disjuntor_alterado = Signal()
     setpoint_alterado = Signal(float)
 
-    def __init__(self, janela, ui, disjuntor):
+    def __init__(self, janela, ui, disjuntor, historico):
         super().__init__(janela)
         self.janela = janela
         self.ui = ui
         self.disjuntor = disjuntor
+        self.historico = historico
 
         self.regra_setpoint = RegraAlerta(
             RegraAlerta.POTENCIA,
@@ -60,7 +59,6 @@ class ComandosController(QObject):
         )
         self.serial = ConfiguracaoSerial()
 
-        self.eventos = []
         self.medicao_atual = None
         self.nivel_atual = ComandosController.NORMAL
 
@@ -69,7 +67,6 @@ class ComandosController(QObject):
 
         self._preencher_painel_serial()
         self._conectar_sinais()
-        self._atualizar_botoes_disjuntor()
         self._atualizar_status_serial()
         self._aplicar_nivel(ComandosController.NORMAL)
 
@@ -106,9 +103,6 @@ class ComandosController(QObject):
     def _conectar_sinais(self):
         self.ui.spin_setpoint.valueChanged.connect(self._ao_alterar_setpoint)
         self.ui.slider_setpoint.valueChanged.connect(self._ao_arrastar_slider)
-
-        self.ui.btn_corte_emergencia.clicked.connect(self._ao_solicitar_corte)
-        self.ui.btn_religar_disjuntor.clicked.connect(self._ao_solicitar_religamento)
         self.ui.btn_regras_alerta.clicked.connect(self._ao_abrir_regras_alerta)
 
         self.ui.combo_porta.currentTextChanged.connect(self._ao_alterar_porta)
@@ -144,6 +138,16 @@ class ComandosController(QObject):
             self._registrar_evento(EventoHistorico.LIMITE_EXCEDIDO, descricao, potencia, "W")
 
         self._avaliar_regras_adicionais(medicao)
+
+    def reavaliar_protecao(self):
+        """Atualiza o alerta depois de um corte ou religamento do disjuntor."""
+        if self.medicao_atual is not None:
+            self.avaliar_protecao(self.medicao_atual)
+        elif not self.disjuntor.esta_fechado():
+            self._aplicar_nivel(ComandosController.CARGA_DESLIGADA)
+
+    def carga_esta_ativa(self) -> bool:
+        return self.disjuntor.esta_fechado()
 
     def aplicar_regras(self, regras):
         """Recebe as regras cadastradas no QDialog de regras de alerta."""
@@ -239,85 +243,6 @@ class ComandosController(QObject):
             )
 
     # ------------------------------------------------------------------
-    # Corte de emergência e religamento
-    # ------------------------------------------------------------------
-
-    def _ao_solicitar_corte(self):
-        resposta = QMessageBox.question(
-            self.janela,
-            "Confirmar corte de emergência",
-            "Enviar o comando RELAY_OFF e abrir o disjuntor?\n\n"
-            "A carga será desligada imediatamente.",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if resposta != QMessageBox.Yes:
-            return
-
-        potencia = self._potencia_atual()
-        self.disjuntor.abrir()
-
-        self._registrar_evento(
-            EventoHistorico.CORTE_EMERGENCIA,
-            f"Comando {ComandosController.COMANDO_RELAY_OFF} enviado pelo operador",
-            potencia,
-            "W",
-        )
-        self._registrar_evento(
-            EventoHistorico.MUDANCA_DISJUNTOR,
-            "Disjuntor aberto - proteção ativada",
-        )
-
-        self._concluir_mudanca_disjuntor()
-
-        QMessageBox.information(
-            self.janela,
-            "Corte de emergência",
-            f"Comando {ComandosController.COMANDO_RELAY_OFF} enviado (simulado).\n"
-            "Disjuntor aberto e carga desligada.",
-        )
-
-    def _ao_solicitar_religamento(self):
-        resposta = QMessageBox.question(
-            self.janela,
-            "Confirmar religamento",
-            "Fechar o disjuntor e restabelecer a carga?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if resposta != QMessageBox.Yes:
-            return
-
-        self.disjuntor.fechar()
-        self._registrar_evento(
-            EventoHistorico.MUDANCA_DISJUNTOR,
-            "Disjuntor fechado - operação normal restabelecida",
-        )
-        self._concluir_mudanca_disjuntor()
-
-    def _concluir_mudanca_disjuntor(self):
-        self._atualizar_botoes_disjuntor()
-        self.estado_disjuntor_alterado.emit()
-
-        if self.medicao_atual is not None:
-            self.avaliar_protecao(self.medicao_atual)
-        elif not self.disjuntor.esta_fechado():
-            self._aplicar_nivel(ComandosController.CARGA_DESLIGADA)
-
-    def _atualizar_botoes_disjuntor(self):
-        fechado = self.disjuntor.esta_fechado()
-        self.ui.btn_corte_emergencia.setEnabled(fechado)
-        self.ui.btn_religar_disjuntor.setEnabled(not fechado)
-
-    def _potencia_atual(self) -> float:
-        if self.medicao_atual is None:
-            return 0.0
-        return self.medicao_atual.calcular_potencia()
-
-    def carga_esta_ativa(self) -> bool:
-        return self.disjuntor.esta_fechado()
-
-    # ------------------------------------------------------------------
     # Painel serial (somente visual nesta etapa)
     # ------------------------------------------------------------------
 
@@ -382,10 +307,5 @@ class ComandosController(QObject):
     # ------------------------------------------------------------------
 
     def _registrar_evento(self, tipo, descricao, valor=None, unidade=""):
-        evento = EventoHistorico(tipo, descricao, valor, unidade)
-        self.eventos.append(evento)
-        self.evento_registrado.emit(evento)
-        return evento
-
-    def get_eventos(self) -> list:
-        return list(self.eventos)
+        """Grava o evento no banco pelo EventosController, que também o mostra na tabela."""
+        self.historico.registrar(EventoHistorico(tipo, descricao, valor, unidade))

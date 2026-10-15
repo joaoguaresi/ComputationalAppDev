@@ -2,10 +2,11 @@ import logging
 from collections import deque
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import QTableWidgetItem
 import pyqtgraph as pg
 
 from controllers.comandos_controller import ComandosController
+from controllers.corte_controller import CorteController
+from controllers.eventos_controller import EventosController
 from models.disjuntor import Disjuntor
 from models.dispositivo import Dispositivo
 from models.dispositivo_repository import DispositivoRepository
@@ -35,12 +36,13 @@ class MainWindowController:
         self.disjuntor = self._carregar_disjuntor()
         self.medicoes = self._pre_carregar_medicoes()
 
-        self.comandos = ComandosController(self.janela, self.ui, self.disjuntor)
-        self.comandos.estado_disjuntor_alterado.connect(self._atualizar_disjuntor)
-        self.comandos.evento_registrado.connect(self._registrar_linha_historico)
+        self.historico = EventosController(self.janela, self.ui.tabela_historico)
+        self.comandos = ComandosController(self.janela, self.ui, self.disjuntor, self.historico)
+        self.corte = CorteController(self.janela, self.ui, self.disjuntor, self.historico, self._potencia_atual)
+        self.corte.estado_disjuntor_alterado.connect(self._atualizar_disjuntor)
+        self.corte.estado_disjuntor_alterado.connect(self.comandos.reavaliar_protecao)
 
         self._configurar_grafico()
-        self._configurar_tabela_historico()
         self._redesenhar_grafico()
         self._atualizar_indicadores(self.medicoes[-1])
         self._atualizar_disjuntor()
@@ -131,17 +133,9 @@ class MainWindowController:
         potencias = [medicao.calcular_potencia() for medicao in self.medicoes]
         self.curva_potencia.setData(self.eixo_x, potencias)
 
-    def _configurar_tabela_historico(self):
-        self.ui.tabela_historico.setColumnWidth(0, 150)
-        self.ui.tabela_historico.setColumnWidth(1, 180)
-
-    def _registrar_linha_historico(self, evento):
-        tabela = self.ui.tabela_historico
-        linha = 0
-        tabela.insertRow(linha)
-        for coluna, valor in enumerate(evento.get_linha_tabela()):
-            item = QTableWidgetItem(valor)
-            tabela.setItem(linha, coluna, item)
+    def _potencia_atual(self) -> float:
+        """Potência da medição mais recente, gravada no evento do corte de emergência."""
+        return self.medicoes[-1].calcular_potencia()
 
     def _atualizar_indicadores(self, medicao):
         dados = medicao.get_dados()
