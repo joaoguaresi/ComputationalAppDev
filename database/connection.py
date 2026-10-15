@@ -43,14 +43,16 @@ class Database:
 
     @classmethod
     def init_db(cls) -> bool:
-        """Cria o banco e as tabelas se ainda não existirem, cadastra os dispositivos
-        padrão e valida o esquema. Devolve False se o banco não puder ser usado."""
+        """Cria o banco e as tabelas se ainda não existirem, migra bancos de versões
+        anteriores, cadastra os dispositivos padrão e valida o esquema. Devolve False
+        se o banco não puder ser usado."""
         try:
             os.makedirs(cls.PASTA_DATA, exist_ok=True)
             with closing(cls.get_connection()) as conn:
                 with conn:
                     for comando in schema.CRIAR_TABELAS:
                         conn.execute(comando)
+                    cls._migrar_esquema(conn)
 
                     agora = datetime.now().strftime(cls.FORMATO_DATA_HORA)
                     conn.executemany(
@@ -66,16 +68,30 @@ class Database:
         logger.info("Conexão com SQLite estabelecida e esquema validado.")
         return True
 
-    @staticmethod
-    def _validar_esquema(conn):
+    @classmethod
+    def _migrar_esquema(cls, conn):
+        """Acrescenta a coluna unidade na tabela eventos dos bancos criados antes dela.
+
+        O ALTER TABLE só roda quando a coluna não aparece no PRAGMA table_info, então a
+        migração pode rodar a cada inicialização sem erro e sem duplicar nada. Ele só
+        acrescenta a coluna: as linhas já gravadas são mantidas e recebem ''. O commit
+        é feito pelo with conn: do init_db().
+        """
+        if "unidade" in cls._colunas(conn, "eventos"):
+            return
+
+        conn.execute(schema.ADICIONAR_COLUNA_UNIDADE)
+        logger.info("Banco migrado: coluna unidade adicionada à tabela eventos, dados existentes preservados.")
+
+    @classmethod
+    def _validar_esquema(cls, conn):
         """Confere as colunas de cada tabela e se as chaves estrangeiras estão ativas.
 
         CREATE TABLE IF NOT EXISTS não altera uma tabela que já existia, então um
         banco antigo com outro formato só é detectado aqui.
         """
         for tabela, colunas in schema.COLUNAS_ESPERADAS.items():
-            linhas = conn.execute("SELECT name FROM pragma_table_info(?)", (tabela,))
-            encontradas = {linha["name"] for linha in linhas}
+            encontradas = cls._colunas(conn, tabela)
             faltando = [coluna for coluna in colunas if coluna not in encontradas]
             if faltando:
                 raise sqlite3.DatabaseError(f"tabela {tabela} sem a(s) coluna(s): {', '.join(faltando)}")
@@ -83,3 +99,13 @@ class Database:
         linha = conn.execute("PRAGMA foreign_keys").fetchone()
         if linha is None or linha[0] != 1:
             raise sqlite3.DatabaseError("PRAGMA foreign_keys não está ativo")
+
+    @staticmethod
+    def _colunas(conn, tabela) -> set:
+        """Nomes das colunas da tabela, lidos do PRAGMA table_info.
+
+        pragma_table_info(?) é a forma de função do PRAGMA table_info: aceita o nome da
+        tabela como parâmetro e permite ler a coluna name pelo nome, não pela posição.
+        """
+        linhas = conn.execute("SELECT name FROM pragma_table_info(?)", (tabela,))
+        return {linha["name"] for linha in linhas}
