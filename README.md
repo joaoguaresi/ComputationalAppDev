@@ -59,9 +59,30 @@ O banco SQLite `data/smartgrid.db` é criado automaticamente na primeira execuç
 | Tabela | Colunas | Restrições |
 |---|---|---|
 | `dispositivos` | id, tag, tipo, status, ultima_atualizacao | `id` PRIMARY KEY; `tag` UNIQUE NOT NULL; `status` NOT NULL com CHECK (ABERTO ou FECHADO); `tipo` e `ultima_atualizacao` NOT NULL |
-| `eventos` | id, data_hora, tipo_evento, valor_medido, descricao, dispositivo_id | `id` PRIMARY KEY; `data_hora`, `tipo_evento` e `descricao` NOT NULL; `dispositivo_id` FOREIGN KEY para `dispositivos(id)` |
+| `eventos` | id, data_hora, tipo_evento, valor_medido, descricao, dispositivo_id, unidade | `id` PRIMARY KEY; `data_hora`, `tipo_evento` e `descricao` NOT NULL; `unidade` NOT NULL DEFAULT ''; `dispositivo_id` FOREIGN KEY para `dispositivos(id)` |
 
 Na criação, o disjuntor principal (`DJ-PRINCIPAL`) e o relé de emergência (`RL-EMERGENCIA`) são cadastrados com `INSERT OR IGNORE`. Por isso, nas execuções seguintes o status gravado é mantido. O dashboard abre mostrando o estado do disjuntor lido dessa tabela.
+
+A coluna `unidade` (W, A ou V) entrou depois da primeira versão da tabela `eventos`. Em um banco que já existia, o `init_db()` confere as colunas com `PRAGMA table_info` e, se ela faltar, executa `ALTER TABLE eventos ADD COLUMN unidade`. A migração roda a cada inicialização sem erro e sem duplicar nada, e os dados já gravados são preservados.
+
+## Histórico de eventos e corte emergencial
+
+- A tabela de histórico do dashboard é carregada do banco na inicialização por `EventoRepository.listar_todos()` (`controllers/eventos_controller.py`). Cada evento novo (corte, mudança do disjuntor, limite excedido, regras de alerta, conexão serial) é gravado no SQLite e só depois aparece na tabela, pelo sinal `evento_registrado`.
+- O corte de emergência (`controllers/corte_controller.py`) grava numa única transação (`with conn:`) o status ABERTO do relé de emergência e do disjuntor e os eventos do histórico. Se qualquer passo falhar, o SQLite desfaz tudo (ROLLBACK): o status nunca muda sem o evento, nem o evento fica gravado sem o status. O religamento segue a mesma regra.
+
+### Demonstração do ROLLBACK
+
+1. Com a aplicação aberta, pressione **Ctrl+Shift+F**. O título da janela passa a mostrar `[TESTE: falha simulada no corte ATIVA]`.
+2. Clique em **CORTE DE EMERGÊNCIA** e confirme. A transação é interrompida entre a atualização do disjuntor e o registro do evento.
+3. A mensagem de erro mostra o motivo e o estado do disjuntor relido do banco depois do ROLLBACK (`FECHADO`). O disjuntor continua verde e nenhum evento novo aparece no histórico.
+4. Abra `logs/smartgrid.log`:
+
+```
+[ERROR] Falha na operação de corte emergencial. Rollback executado: falha simulada entre a atualização do disjuntor e o registro do evento.
+[INFO] Estado do disjuntor no banco após o rollback: FECHADO.
+```
+
+5. Pressione **Ctrl+Shift+F** de novo para desativar a falha. O corte volta a funcionar normalmente.
 
 ## Como executar
 
