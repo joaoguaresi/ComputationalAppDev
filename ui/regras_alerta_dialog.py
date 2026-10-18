@@ -16,8 +16,8 @@ from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QCursor,
     QImage, QKeySequence, QLinearGradient, QPainter,
     QPalette, QPixmap, QRadialGradient, QTransform)
 from PySide6.QtWidgets import (QAbstractButton, QApplication, QComboBox, QDateEdit,
-    QDialog, QDialogButtonBox, QDoubleSpinBox, QGridLayout,
-    QGroupBox, QLabel, QListWidget, QListWidgetItem,
+    QDialog, QDialogButtonBox, QGridLayout, QGroupBox,
+    QLabel, QLineEdit, QListWidget, QListWidgetItem,
     QPushButton, QSizePolicy, QVBoxLayout, QWidget)
 
 class Ui_RegrasAlertaDialog(object):
@@ -52,13 +52,10 @@ class Ui_RegrasAlertaDialog(object):
 
         self.grid_formulario.addWidget(self.label_limite_max, 1, 0, 1, 1)
 
-        self.spin_limite_max = QDoubleSpinBox(self.group_formulario)
-        self.spin_limite_max.setObjectName(u"spin_limite_max")
-        self.spin_limite_max.setMinimum(0.100000000000000)
-        self.spin_limite_max.setMaximum(100000.000000000000000)
-        self.spin_limite_max.setValue(100.000000000000000)
+        self.edit_limite_max = QLineEdit(self.group_formulario)
+        self.edit_limite_max.setObjectName(u"edit_limite_max")
 
-        self.grid_formulario.addWidget(self.spin_limite_max, 1, 1, 1, 1)
+        self.grid_formulario.addWidget(self.edit_limite_max, 1, 1, 1, 1)
 
         self.label_vigencia = QLabel(self.group_formulario)
         self.label_vigencia.setObjectName(u"label_vigencia")
@@ -121,6 +118,7 @@ class Ui_RegrasAlertaDialog(object):
         self.group_formulario.setTitle(QCoreApplication.translate("RegrasAlertaDialog", u"Nova Regra", None))
         self.label_grandeza.setText(QCoreApplication.translate("RegrasAlertaDialog", u"Grandeza", None))
         self.label_limite_max.setText(QCoreApplication.translate("RegrasAlertaDialog", u"Limite m\u00e1ximo", None))
+        self.edit_limite_max.setPlaceholderText(QCoreApplication.translate("RegrasAlertaDialog", u"N\u00famero maior que zero (ex.: 25,0)", None))
         self.label_vigencia.setText(QCoreApplication.translate("RegrasAlertaDialog", u"Vigente a partir de", None))
         self.btn_adicionar.setText(QCoreApplication.translate("RegrasAlertaDialog", u"Adicionar Regra", None))
         self.group_lista.setTitle(QCoreApplication.translate("RegrasAlertaDialog", u"Regras Cadastradas", None))

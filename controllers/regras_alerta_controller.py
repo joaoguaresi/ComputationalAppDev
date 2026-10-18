@@ -1,4 +1,5 @@
 import logging
+import math
 import sqlite3
 
 from PySide6.QtCore import QDate
@@ -16,9 +17,10 @@ class RegrasAlertaController:
 
     Ao abrir, carrega os limites gravados na tabela limites do banco. Cada parâmetro
     (corrente máxima e tensão de desarme) tem um único limite, e o diálogo exige o
-    cadastro de no mínimo duas regras antes de liberar o botão OK. Os limites
-    cadastrados ficam disponíveis via get_limites() para a tela principal buscar
-    depois que o diálogo é aceito.
+    cadastro de no mínimo duas regras antes de liberar o botão OK. Todo valor digitado
+    é validado aqui, no controller, antes de entrar na lista. Os limites cadastrados
+    ficam disponíveis via get_limites() para a tela principal buscar depois que o
+    diálogo é aceito.
     """
 
     MINIMO_REGRAS = 2
@@ -56,21 +58,78 @@ class RegrasAlertaController:
         return limites
 
     def _conectar_sinais(self):
-        self.ui.btn_adicionar.clicked.connect(self._ao_adicionar_regra)
+        self.ui.btn_adicionar.clicked.connect(self._adicionar_valor_digitado)
         self.ui.btn_remover.clicked.connect(self._ao_remover_regra)
         self.ui.button_box.accepted.connect(self._validar_antes_de_aceitar)
         self.ui.button_box.rejected.connect(self.dialog.reject)
 
-    def _ao_adicionar_regra(self):
+    def _adicionar_valor_digitado(self) -> bool:
+        """Valida o valor digitado e, se ele for válido, inclui o limite na lista.
+
+        Devolve False quando o valor é recusado: nesse caso nada entra na lista e, por
+        isso, nada é gravado no banco.
+        """
         parametro = self.ui.combo_grandeza.currentData()
-        novo = Limite(parametro, self.ui.spin_limite_max.value())
+        valor = self._validar_valor(self.ui.edit_limite_max.text().strip(), Limite.NOMES[parametro].lower())
+        if valor is None:
+            return False
 
         # O parametro é UNIQUE no banco: um valor novo para um parâmetro que já está na
         # lista substitui o anterior, em vez de criar uma segunda regra para ele.
         self.limites = [limite for limite in self.limites if limite.parametro != parametro]
-        self.limites.append(novo)
+        self.limites.append(Limite(parametro, valor))
         self.limites.sort(key=lambda limite: limite.parametro)
+
+        self.ui.edit_limite_max.clear()
         self._redesenhar_lista()
+        return True
+
+    def _validar_valor(self, texto, nome):
+        """Converte o texto digitado no valor do limite, ou devolve None se ele for inválido.
+
+        A validação segue esta ordem: campo vazio, valor não numérico e valor zero ou
+        negativo. Cada falha avisa o operador com QMessageBox e registra WARNING no log.
+        """
+        if not texto:
+            self._recusar_entrada(
+                "Campo vazio",
+                f"Preencha o valor do limite de {nome}.",
+                f"campo vazio ({nome})",
+            )
+            return None
+
+        try:
+            # Aceita vírgula decimal, como o operador costuma digitar (25,5).
+            valor = float(texto.replace(",", "."))
+            # float() também aceita 'inf' e 'nan', que não servem como limite.
+            if not math.isfinite(valor):
+                raise ValueError(texto)
+        except ValueError:
+            self._recusar_entrada(
+                "Valor não numérico",
+                f"O valor '{texto}' não é um número.\n"
+                "Digite apenas números, com vírgula ou ponto nos decimais (ex.: 25,0).",
+                f"valor '{texto}' não numérico ({nome})",
+            )
+            return None
+
+        if valor <= 0:
+            self._recusar_entrada(
+                "Valor inválido",
+                f"O limite de {nome} precisa ser maior que zero.\nValor informado: {texto}",
+                f"valor {texto} menor ou igual a zero ({nome})",
+            )
+            return None
+
+        return valor
+
+    def _recusar_entrada(self, titulo, mensagem, motivo):
+        """Registra a entrada inválida no log, avisa o operador e devolve o foco ao campo
+        para a correção."""
+        logger.warning("Entrada inválida no cadastro de limites: %s.", motivo)
+        QMessageBox.warning(self.dialog, titulo, mensagem)
+        self.ui.edit_limite_max.setFocus()
+        self.ui.edit_limite_max.selectAll()
 
     def _ao_remover_regra(self):
         indice = self.ui.lista_regras.currentRow()
@@ -92,6 +151,12 @@ class RegrasAlertaController:
             self.ui.label_status.setText(f"{total} regra(s) cadastrada(s). Pronto para confirmar.")
 
     def _validar_antes_de_aceitar(self):
+        # Um valor digitado e não adicionado passa pela mesma validação antes de
+        # confirmar: assim o OK (ou o Enter no campo) nem ignora o valor sem aviso, nem
+        # aceita um valor inválido.
+        if self.ui.edit_limite_max.text().strip() and not self._adicionar_valor_digitado():
+            return
+
         if len(self.limites) < RegrasAlertaController.MINIMO_REGRAS:
             QMessageBox.warning(
                 self.dialog,
