@@ -1,8 +1,8 @@
 import logging
 import sqlite3
 
-from PySide6.QtCore import QObject, Signal
-from PySide6.QtWidgets import QMessageBox, QTableWidgetItem
+from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtWidgets import QHeaderView, QMessageBox, QTableWidgetItem
 
 from models.evento_repository import EventoRepository
 
@@ -29,11 +29,39 @@ class EventosController(QObject):
         self.janela = janela
         self.tabela = tabela
 
-        self.tabela.setColumnWidth(0, self.LARGURA_DATA_HORA)
-        self.tabela.setColumnWidth(1, self.LARGURA_TIPO)
+        self._configurar_colunas()
         self.evento_registrado.connect(self._adicionar_linha)
 
         self.carregar_historico()
+
+    def _configurar_colunas(self):
+        """Data/Hora e Tipo com largura fixa, Valor Medido na largura do conteúdo e a
+        Descrição com todo o espaço que sobra.
+
+        A descrição que ainda assim não cabe quebra em mais de uma linha, em vez de ser
+        cortada com "...". Como a altura necessária depende da largura da coluna, as
+        linhas são reajustadas sempre que uma coluna muda de largura (por exemplo, quando
+        a janela abre ou é redimensionada).
+        """
+        cabecalho = self.tabela.horizontalHeader()
+        self.tabela.setColumnWidth(0, self.LARGURA_DATA_HORA)
+        self.tabela.setColumnWidth(1, self.LARGURA_TIPO)
+        cabecalho.setStretchLastSection(False)
+        cabecalho.setSectionResizeMode(2, QHeaderView.Stretch)
+        cabecalho.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.tabela.setWordWrap(True)
+
+        # O reajuste roda logo depois do layout, num timer de disparo único: durante o
+        # sinal sectionResized a coluna ainda não tem a largura nova, e vários
+        # redimensionamentos seguidos viram um único recálculo.
+        self._ajuste_das_linhas = QTimer(self)
+        self._ajuste_das_linhas.setSingleShot(True)
+        self._ajuste_das_linhas.setInterval(0)
+        self._ajuste_das_linhas.timeout.connect(self.tabela.resizeRowsToContents)
+        cabecalho.sectionResized.connect(self._agendar_ajuste_das_linhas)
+
+    def _agendar_ajuste_das_linhas(self):
+        self._ajuste_das_linhas.start()
 
     def carregar_historico(self):
         """Preenche a tabela com os eventos gravados, do mais recente para o mais antigo."""
@@ -52,6 +80,7 @@ class EventosController(QObject):
         self.tabela.setRowCount(len(eventos))
         for linha, evento in enumerate(eventos):
             self._preencher_linha(linha, evento)
+        self._agendar_ajuste_das_linhas()
         logger.info("Histórico de eventos carregado do banco: %d registro(s).", len(eventos))
 
     def registrar(self, evento) -> bool:
@@ -84,6 +113,7 @@ class EventosController(QObject):
         """Insere o evento novo no topo, mantendo a ordem do mais recente para o mais antigo."""
         self.tabela.insertRow(0)
         self._preencher_linha(0, evento)
+        self.tabela.resizeRowToContents(0)
 
     def _preencher_linha(self, linha, evento):
         for coluna, valor in enumerate(evento.get_linha_tabela()):

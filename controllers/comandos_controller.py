@@ -1,9 +1,8 @@
 import logging
 
 from PySide6.QtCore import QObject, Signal
-from PySide6.QtWidgets import QDialog, QMessageBox
+from PySide6.QtWidgets import QMessageBox
 
-from controllers.regras_alerta_controller import RegrasAlertaController
 from models.config_manager import ConfigManager
 from models.configuracao_serial import ConfiguracaoSerial
 from models.evento_historico import EventoHistorico
@@ -13,10 +12,11 @@ logger = logging.getLogger("smartgrid")
 
 
 class ComandosController(QObject):
-    """Proteção local por setpoint, regras de alerta e painel serial.
+    """Proteção local por setpoint e painel serial.
 
-    O corte de emergência e o religamento ficam no CorteController. Os eventos gerados
-    aqui são gravados no banco pelo EventosController. Nesta etapa a conexão serial é
+    O corte de emergência e o religamento ficam no CorteController, e os limites de
+    segurança (regras de alerta) no LimitesController. Os eventos gerados aqui são
+    gravados no banco pelo EventosController. Nesta etapa a conexão serial é
     simulada: o painel só atualiza o status visual, sem comunicação real com o
     microcontrolador.
     """
@@ -62,9 +62,6 @@ class ComandosController(QObject):
         self.medicao_atual = None
         self.nivel_atual = ComandosController.NORMAL
 
-        self.regras_adicionais = []
-        self._regras_violadas = set()
-
         self._preencher_painel_serial()
         self._conectar_sinais()
         self._atualizar_status_serial()
@@ -103,7 +100,6 @@ class ComandosController(QObject):
     def _conectar_sinais(self):
         self.ui.spin_setpoint.valueChanged.connect(self._ao_alterar_setpoint)
         self.ui.slider_setpoint.valueChanged.connect(self._ao_arrastar_slider)
-        self.ui.btn_regras_alerta.clicked.connect(self._ao_abrir_regras_alerta)
 
         self.ui.combo_porta.currentTextChanged.connect(self._ao_alterar_porta)
         self.ui.combo_baudrate.currentIndexChanged.connect(self._ao_alterar_baudrate)
@@ -135,9 +131,11 @@ class ComandosController(QObject):
                 f"Potência de {potencia:.2f} W ultrapassou o setpoint "
                 f"de {self.regra_setpoint.limite_max:.2f} W"
             )
+            logger.warning(
+                "Limite de potência violado: %.1fW (Limite configurado: %.1fW).",
+                potencia, self.regra_setpoint.limite_max,
+            )
             self._registrar_evento(EventoHistorico.LIMITE_EXCEDIDO, descricao, potencia, "W")
-
-        self._avaliar_regras_adicionais(medicao)
 
     def reavaliar_protecao(self):
         """Atualiza o alerta depois de um corte ou religamento do disjuntor."""
@@ -148,32 +146,6 @@ class ComandosController(QObject):
 
     def carga_esta_ativa(self) -> bool:
         return self.disjuntor.esta_fechado()
-
-    def aplicar_regras(self, regras):
-        """Recebe os limites (Limite) cadastrados no QDialog de regras de alerta."""
-        self.regras_adicionais = list(regras)
-        self._regras_violadas.clear()
-        if self.medicao_atual is not None:
-            self._avaliar_regras_adicionais(self.medicao_atual)
-
-    def _avaliar_regras_adicionais(self, medicao):
-        """Registra um evento a cada travessia normal -> violada de uma regra."""
-        for indice, regra in enumerate(self.regras_adicionais):
-            valor = regra.extrair_valor(medicao)
-
-            if not regra.foi_violado(valor):
-                self._regras_violadas.discard(indice)
-                continue
-            if indice in self._regras_violadas:
-                continue
-
-            self._regras_violadas.add(indice)
-            unidade = regra.unidade
-            descricao = (
-                f"{regra.get_nome()}: limite de "
-                f"{regra.valor:.2f} {unidade} ultrapassado"
-            )
-            self._registrar_evento(EventoHistorico.LIMITE_EXCEDIDO, descricao, valor, unidade)
 
     def _classificar_potencia(self, potencia) -> str:
         if self.regra_setpoint.foi_violada(potencia):
@@ -226,21 +198,6 @@ class ComandosController(QObject):
 
     def _ao_arrastar_slider(self, valor):
         self.ui.spin_setpoint.setValue(float(valor))
-
-    # ------------------------------------------------------------------
-    # Regras de alerta (QDialog modal)
-    # ------------------------------------------------------------------
-
-    def _ao_abrir_regras_alerta(self):
-        dialog = QDialog(self.janela)
-        regras_dialog = RegrasAlertaController(dialog)
-
-        if dialog.exec() == QDialog.Accepted:
-            self.aplicar_regras(regras_dialog.get_limites())
-            self._registrar_evento(
-                EventoHistorico.REGRAS_ALERTA,
-                f"{len(self.regras_adicionais)} regra(s) de alerta atualizada(s) pelo operador",
-            )
 
     # ------------------------------------------------------------------
     # Painel serial (somente visual nesta etapa)

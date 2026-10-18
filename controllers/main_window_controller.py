@@ -7,6 +7,7 @@ import pyqtgraph as pg
 from controllers.comandos_controller import ComandosController
 from controllers.corte_controller import CorteController
 from controllers.eventos_controller import EventosController
+from controllers.limites_controller import LimitesController
 from models.disjuntor import Disjuntor
 from models.dispositivo import Dispositivo
 from models.dispositivo_repository import DispositivoRepository
@@ -41,12 +42,14 @@ class MainWindowController:
         self.corte = CorteController(self.janela, self.ui, self.disjuntor, self.historico, self._potencia_atual)
         self.corte.estado_disjuntor_alterado.connect(self._atualizar_disjuntor)
         self.corte.estado_disjuntor_alterado.connect(self.comandos.reavaliar_protecao)
+        self.limites = LimitesController(self.janela, self.ui, self.historico)
 
         self._configurar_grafico()
         self._redesenhar_grafico()
         self._atualizar_indicadores(self.medicoes[-1])
         self._atualizar_disjuntor()
         self.comandos.avaliar_protecao(self.medicoes[-1])
+        self.limites.avaliar(self.medicoes[-1])
 
         self.timer = QTimer(self.janela)
         self.timer.timeout.connect(self._simular_nova_medicao)
@@ -163,3 +166,4 @@ class MainWindowController:
         self._atualizar_indicadores(medicao)
         self._atualizar_disjuntor()
         self.comandos.avaliar_protecao(medicao)
+        self.limites.avaliar(medicao)
