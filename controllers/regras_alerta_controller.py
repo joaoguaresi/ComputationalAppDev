@@ -1,10 +1,12 @@
 import logging
 import math
 import sqlite3
+from contextlib import closing
 
 from PySide6.QtCore import QDate
 from PySide6.QtWidgets import QMessageBox
 
+from database.connection import Database
 from models.limite import Limite
 from models.limite_repository import LimiteRepository
 from ui.regras_alerta_dialog import Ui_RegrasAlertaDialog
@@ -18,9 +20,9 @@ class RegrasAlertaController:
     Ao abrir, carrega os limites gravados na tabela limites do banco. Cada parâmetro
     (corrente máxima e tensão de desarme) tem um único limite, e o diálogo exige o
     cadastro de no mínimo duas regras antes de liberar o botão OK. Todo valor digitado
-    é validado aqui, no controller, antes de entrar na lista. Os limites cadastrados
-    ficam disponíveis via get_limites() para a tela principal buscar depois que o
-    diálogo é aceito.
+    é validado aqui, no controller, antes de entrar na lista. No OK, os limites são
+    gravados no banco numa única transação e ficam disponíveis via get_limites() para
+    a tela principal buscar depois que o diálogo é aceito.
     """
 
     MINIMO_REGRAS = 2
@@ -164,7 +166,51 @@ class RegrasAlertaController:
                 f"Cadastre pelo menos {RegrasAlertaController.MINIMO_REGRAS} regras de alerta antes de confirmar.",
             )
             return
+
+        if not self._salvar_limites():
+            return
         self.dialog.accept()
+
+    def _salvar_limites(self) -> bool:
+        """Grava todos os limites da lista numa única transação: ou todos, ou nenhum.
+
+        Cada LimiteRepository.salvar recebe a mesma conexão e não faz commit. O with conn:
+        faz o COMMIT só no fim do bloco; se qualquer limite falhar, o ROLLBACK desfaz os
+        que já tinham sido gravados, e o diálogo continua aberto para a correção.
+        """
+        try:
+            with closing(Database.get_connection()) as conn:
+                with conn:
+                    for limite in self.limites:
+                        LimiteRepository.salvar(limite, conn=conn)
+        except sqlite3.IntegrityError as erro:
+            # Segunda barreira: a validação do controller já recusa zero, negativo e
+            # texto, mas o CHECK da tabela recusa de novo qualquer valor que escape dela.
+            logger.error("Limites de segurança recusados pelo banco. Rollback executado: %s.", erro)
+            QMessageBox.critical(
+                self.dialog,
+                "Limites não salvos",
+                "O banco recusou os limites por violarem uma restrição de integridade.\n"
+                f"Motivo: {erro}\n\n"
+                "A transação foi desfeita (ROLLBACK) e nenhum limite foi alterado.",
+            )
+            return False
+        except sqlite3.Error as erro:
+            # OperationalError (ex.: database is locked, quando o timeout da conexão se
+            # esgota) e as demais falhas do SQLite.
+            logger.error("Falha ao salvar os limites de segurança, nenhum limite foi alterado: %s.", erro)
+            QMessageBox.critical(
+                self.dialog,
+                "Limites não salvos",
+                "Não foi possível gravar os limites no banco.\n"
+                f"Motivo: {erro}\n\n"
+                "Nenhum limite foi alterado. Tente novamente.",
+            )
+            return False
+
+        resumo = ", ".join(f"{limite.get_nome().lower()} {limite.get_valor_formatado()}" for limite in self.limites)
+        logger.info("Limites de segurança salvos no banco: %s.", resumo)
+        return True
 
     def get_limites(self) -> list:
         return list(self.limites)
