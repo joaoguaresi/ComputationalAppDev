@@ -1,4 +1,10 @@
+import logging
+import math
+
+from models.config_manager import ConfigManager
 from models.dispositivo import Dispositivo
+
+logger = logging.getLogger("smartgrid")
 
 
 class Limite:
@@ -31,6 +37,13 @@ class Limite:
         TENSAO_DESARME: "tensão",
     }
 
+    # Chave do valor inicial de cada parâmetro no config.json, usado enquanto a tabela
+    # limites ainda está vazia.
+    CHAVES_CONFIG = {
+        CORRENTE_MAX: "corrente_max",
+        TENSAO_DESARME: "tensao_desarme",
+    }
+
     def __init__(self, parametro, valor, unidade=None,
                  dispositivo_tag=Dispositivo.TAG_DISJUNTOR_PRINCIPAL, limite_id=None):
         self.id = limite_id
@@ -45,6 +58,33 @@ class Limite:
         # nenhum dispositivo. Os dois limites atuam sobre o disjuntor principal: é ele
         # que abre quando a corrente ou a tensão passam do limite.
         self.dispositivo_tag = dispositivo_tag
+
+    @classmethod
+    def iniciais_do_config(cls) -> list:
+        """Limites iniciais lidos do config.json, um para cada parâmetro.
+
+        O config.json pode ser editado à mão: um valor que não seja um número maior que
+        zero é trocado pelo padrão do ConfigManager, com WARNING no log.
+        """
+        limites = []
+        for parametro, chave in cls.CHAVES_CONFIG.items():
+            valor = ConfigManager.get(chave)
+            if not cls._valor_inicial_valido(valor):
+                padrao = ConfigManager.DEFAULTS[chave]
+                logger.warning(
+                    "Valor inicial inválido para '%s' no config.json: %r. Usando o padrão %s.",
+                    chave, valor, padrao,
+                )
+                valor = padrao
+            limites.append(cls(parametro, float(valor)))
+        return limites
+
+    @staticmethod
+    def _valor_inicial_valido(valor) -> bool:
+        # No Python, bool é subclasse de int: true/false no JSON não vale como limite.
+        if isinstance(valor, bool) or not isinstance(valor, (int, float)):
+            return False
+        return math.isfinite(valor) and valor > 0
 
     def extrair_valor(self, medicao) -> float:
         """Valor da medição que é comparado com este limite."""
@@ -63,3 +103,8 @@ class Limite:
 
     def get_valor_formatado(self) -> str:
         return f"{self.valor:.2f} {self.unidade}"
+
+    @staticmethod
+    def resumir(limites) -> str:
+        """Texto dos limites para o log e o histórico, ex.: "corrente máxima 25.00 A, ..."."""
+        return ", ".join(f"{limite.get_nome().lower()} {limite.get_valor_formatado()}" for limite in limites)

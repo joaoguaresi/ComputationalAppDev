@@ -37,13 +37,20 @@ class RegrasAlertaController:
             self.ui.combo_grandeza.addItem(rotulo, parametro)
         self.ui.date_vigencia.setDate(QDate.currentDate())
 
+        # True quando a tabela limites está vazia e a lista veio do config.json: os valores
+        # aparecem para o operador, mas só são gravados no banco quando ele confirma.
+        self.limites_do_config = False
         self.limites = self._carregar_limites_salvos()
 
         self._conectar_sinais()
         self._redesenhar_lista()
 
     def _carregar_limites_salvos(self) -> list:
-        """Lê os limites gravados no banco para mostrá-los na lista ao abrir o diálogo."""
+        """Lê os limites gravados no banco para mostrá-los na lista ao abrir o diálogo.
+
+        Com a tabela vazia (primeiro uso ou clone limpo), a lista já vem com os limites
+        iniciais do config.json, que só são gravados quando o operador confirma com OK.
+        """
         try:
             limites = LimiteRepository.listar_todos()
         except sqlite3.Error as erro:
@@ -55,6 +62,15 @@ class RegrasAlertaController:
                 "Os detalhes do erro estão em logs/smartgrid.log.",
             )
             return []
+
+        if not limites:
+            self.limites_do_config = True
+            limites = Limite.iniciais_do_config()
+            logger.info(
+                "Tabela limites vazia: o diálogo abre com os limites iniciais do config.json: %s.",
+                Limite.resumir(limites),
+            )
+            return limites
 
         logger.info("Limites de segurança carregados do banco: %d registro(s).", len(limites))
         return limites
@@ -149,6 +165,10 @@ class RegrasAlertaController:
         if total < RegrasAlertaController.MINIMO_REGRAS:
             faltam = RegrasAlertaController.MINIMO_REGRAS - total
             self.ui.label_status.setText(f"Cadastre mais {faltam} regra(s) para continuar.")
+        elif self.limites_do_config:
+            self.ui.label_status.setText(
+                "Limites iniciais do config.json, ainda não salvos. Confirme com OK para gravá-los."
+            )
         else:
             self.ui.label_status.setText(f"{total} regra(s) cadastrada(s). Pronto para confirmar.")
 
@@ -208,8 +228,7 @@ class RegrasAlertaController:
             )
             return False
 
-        resumo = ", ".join(f"{limite.get_nome().lower()} {limite.get_valor_formatado()}" for limite in self.limites)
-        logger.info("Limites de segurança salvos no banco: %s.", resumo)
+        logger.info("Limites de segurança salvos no banco: %s.", Limite.resumir(self.limites))
         return True
 
     def get_limites(self) -> list:

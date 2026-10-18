@@ -50,7 +50,8 @@ class LimitesController:
         self.ui.btn_regras_alerta.clicked.connect(self._ao_abrir_regras_alerta)
 
     def _carregar_limites(self) -> list:
-        """Limites gravados no banco, monitorados desde a abertura do dashboard."""
+        """Limites monitorados desde a abertura do dashboard: os gravados no banco ou, na
+        falta deles, os limites iniciais do config.json."""
         try:
             limites = LimiteRepository.listar_todos()
         except sqlite3.Error as erro:
@@ -58,12 +59,19 @@ class LimitesController:
             QMessageBox.warning(
                 self.janela,
                 "Limites de segurança",
-                "Não foi possível carregar os limites gravados no banco, e o monitoramento "
-                "começa sem limites.\nOs detalhes do erro estão em logs/smartgrid.log.",
+                "Não foi possível carregar os limites gravados no banco, e o monitoramento usa "
+                "os limites iniciais do config.json.\nOs detalhes do erro estão em logs/smartgrid.log.",
             )
-            return []
+            limites = []
 
-        logger.info("Monitoramento iniciado com %d limite(s) de segurança do banco.", len(limites))
+        if limites:
+            logger.info("Monitoramento iniciado com os limites do banco: %s.", Limite.resumir(limites))
+            return limites
+
+        # Tabela vazia (primeiro uso ou clone limpo) ou banco ilegível: o dashboard nunca
+        # fica sem proteção, e valem os limites iniciais do config.json.
+        limites = Limite.iniciais_do_config()
+        logger.info("Monitoramento iniciado com os limites iniciais do config.json: %s.", Limite.resumir(limites))
         return limites
 
     # ------------------------------------------------------------------
@@ -154,8 +162,6 @@ class LimitesController:
 
         # Quando o diálogo é aceito, os limites já foram gravados no banco por ele.
         limites = regras_dialog.get_limites()
-        resumo = ", ".join(f"{limite.get_nome().lower()} {limite.get_valor_formatado()}" for limite in limites)
-        self.historico.registrar(
-            EventoHistorico(EventoHistorico.REGRAS_ALERTA, f"Limites de segurança salvos pelo operador: {resumo}")
-        )
+        descricao = f"Limites de segurança salvos pelo operador: {Limite.resumir(limites)}"
+        self.historico.registrar(EventoHistorico(EventoHistorico.REGRAS_ALERTA, descricao))
         self.aplicar_limites(limites)
