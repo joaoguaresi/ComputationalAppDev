@@ -17,7 +17,7 @@
    <item>
     <widget class="QLabel" name="label_instrucoes">
      <property name="text">
-      <string>Cadastre ao menos duas regras de alerta (ex.: limite máximo de corrente e de tensão).</string>
+      <string>Cadastre os limites de segurança: corrente máxima e tensão de desarme (mínimo de duas regras). Os limites já salvos aparecem na lista abaixo.</string>
      </property>
      <property name="wordWrap">
       <bool>true</bool>
@@ -61,50 +61,20 @@
        </widget>
       </item>
       <item row="2" column="0">
-       <widget class="QCheckBox" name="check_usar_limite_min">
-        <property name="text">
-         <string>Usar limite mínimo</string>
-        </property>
-       </widget>
-      </item>
-      <item row="2" column="1">
-       <widget class="QDoubleSpinBox" name="spin_limite_min">
-        <property name="enabled">
-         <bool>false</bool>
-        </property>
-        <property name="minimum">
-         <double>0.000000000000000</double>
-        </property>
-        <property name="maximum">
-         <double>100000.000000000000000</double>
-        </property>
-       </widget>
-      </item>
-      <item row="3" column="0">
-       <widget class="QLabel" name="label_descricao">
-        <property name="text">
-         <string>Descrição</string>
-        </property>
-       </widget>
-      </item>
-      <item row="3" column="1">
-       <widget class="QLineEdit" name="edit_descricao"/>
-      </item>
-      <item row="4" column="0">
        <widget class="QLabel" name="label_vigencia">
         <property name="text">
          <string>Vigente a partir de</string>
         </property>
        </widget>
       </item>
-      <item row="4" column="1">
+      <item row="2" column="1">
        <widget class="QDateEdit" name="date_vigencia">
         <property name="calendarPopup">
          <bool>true</bool>
         </property>
        </widget>
       </item>
-      <item row="5" column="0" colspan="2">
+      <item row="3" column="0" colspan="2">
        <widget class="QPushButton" name="btn_adicionar">
         <property name="text">
          <string>Adicionar Regra</string>

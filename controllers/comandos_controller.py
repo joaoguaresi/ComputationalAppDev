@@ -150,7 +150,7 @@ class ComandosController(QObject):
         return self.disjuntor.esta_fechado()
 
     def aplicar_regras(self, regras):
-        """Recebe as regras cadastradas no QDialog de regras de alerta."""
+        """Recebe os limites (Limite) cadastrados no QDialog de regras de alerta."""
         self.regras_adicionais = list(regras)
         self._regras_violadas.clear()
         if self.medicao_atual is not None:
@@ -161,17 +161,17 @@ class ComandosController(QObject):
         for indice, regra in enumerate(self.regras_adicionais):
             valor = regra.extrair_valor(medicao)
 
-            if not regra.foi_violada(valor):
+            if not regra.foi_violado(valor):
                 self._regras_violadas.discard(indice)
                 continue
             if indice in self._regras_violadas:
                 continue
 
             self._regras_violadas.add(indice)
-            unidade = regra.get_unidade()
+            unidade = regra.unidade
             descricao = (
-                f"{regra.descricao}: limite de "
-                f"{regra.limite_max:.2f} {unidade} ultrapassado"
+                f"{regra.get_nome()}: limite de "
+                f"{regra.valor:.2f} {unidade} ultrapassado"
             )
             self._registrar_evento(EventoHistorico.LIMITE_EXCEDIDO, descricao, valor, unidade)
 
@@ -233,10 +233,10 @@ class ComandosController(QObject):
 
     def _ao_abrir_regras_alerta(self):
         dialog = QDialog(self.janela)
-        regras_dialog = RegrasAlertaController(dialog, regras_iniciais=self.regras_adicionais)
+        regras_dialog = RegrasAlertaController(dialog)
 
         if dialog.exec() == QDialog.Accepted:
-            self.aplicar_regras(regras_dialog.get_regras())
+            self.aplicar_regras(regras_dialog.get_limites())
             self._registrar_evento(
                 EventoHistorico.REGRAS_ALERTA,
                 f"{len(self.regras_adicionais)} regra(s) de alerta atualizada(s) pelo operador",
