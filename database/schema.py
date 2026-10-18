@@ -31,7 +31,27 @@ CRIAR_TABELA_EVENTOS = """
     )
 """
 
-CRIAR_TABELAS = (CRIAR_TABELA_DISPOSITIVOS, CRIAR_TABELA_EVENTOS)
+# Limites de segurança cadastrados no QDialog de limites (ex.: CORRENTE_MAX, TENSAO_DESARME).
+# O parametro é UNIQUE: cada grandeza tem um único limite, regravado a cada salvamento.
+# dispositivo_id aponta o equipamento protegido pelo limite e aceita NULL, como em eventos.
+#
+# O CHECK é a segunda barreira contra valor inválido: a primeira é a validação do
+# controller, antes de chegar ao banco. Só valor > 0 não basta no SQLite: um texto como
+# 'abc' fica gravado como TEXT e passa nessa comparação, porque o SQLite considera texto
+# sempre maior que número. Por isso o CHECK também exige typeof(valor) = 'real' (inteiros
+# e textos numéricos, como '25.5', já chegam convertidos para REAL pela afinidade da coluna).
+CRIAR_TABELA_LIMITES = """
+    CREATE TABLE IF NOT EXISTS limites (
+        id             INTEGER PRIMARY KEY,
+        parametro      TEXT UNIQUE NOT NULL,
+        valor          REAL NOT NULL CHECK (typeof(valor) = 'real' AND valor > 0),
+        unidade        TEXT NOT NULL,
+        dispositivo_id INTEGER REFERENCES dispositivos (id)
+    )
+"""
+
+# Em um banco que já existia, o CREATE TABLE IF NOT EXISTS cria só as tabelas que faltam.
+CRIAR_TABELAS = (CRIAR_TABELA_DISPOSITIVOS, CRIAR_TABELA_EVENTOS, CRIAR_TABELA_LIMITES)
 
 # Migração dos bancos criados antes da coluna unidade existir: o CREATE TABLE IF NOT
 # EXISTS não altera uma tabela que já existe. Mesma definição da coluna no CREATE TABLE.
@@ -53,4 +73,5 @@ DISPOSITIVOS_PADRAO = (
 COLUNAS_ESPERADAS = {
     "dispositivos": ("id", "tag", "tipo", "status", "ultima_atualizacao"),
     "eventos": ("id", "data_hora", "tipo_evento", "valor_medido", "descricao", "dispositivo_id", "unidade"),
+    "limites": ("id", "parametro", "valor", "unidade", "dispositivo_id"),
 }
