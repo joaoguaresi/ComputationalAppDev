@@ -1,13 +1,19 @@
 from datetime import datetime
 
+from models.dispositivo import Dispositivo
+
 
 class Disjuntor:
-    FECHADO = "FECHADO"
-    ABERTO = "ABERTO"
+    # Mesmos valores aceitos pelo CHECK da coluna status da tabela dispositivos.
+    FECHADO = Dispositivo.FECHADO
+    ABERTO = Dispositivo.ABERTO
 
-    def __init__(self):
-        self.estado = Disjuntor.FECHADO
-        self.ultima_alteracao = datetime.now()
+    def __init__(self, estado=FECHADO, ultima_alteracao=None):
+        self.estado = estado
+
+        if ultima_alteracao is None:
+            ultima_alteracao = datetime.now()
+        self.ultima_alteracao = ultima_alteracao
 
     def abrir(self):
         self.estado = Disjuntor.ABERTO

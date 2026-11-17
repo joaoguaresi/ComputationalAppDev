@@ -2,11 +2,15 @@ import logging
 from collections import deque
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import QTableWidgetItem
 import pyqtgraph as pg
 
 from controllers.comandos_controller import ComandosController
+from controllers.corte_controller import CorteController
+from controllers.eventos_controller import EventosController
+from controllers.limites_controller import LimitesController
 from models.disjuntor import Disjuntor
+from models.dispositivo import Dispositivo
+from models.dispositivo_repository import DispositivoRepository
 from models.medicao import Medicao
 from models.simulador_telemetria import SimuladorTelemetria
 from ui.main_window import Ui_JanelaPrincipal
@@ -30,19 +34,22 @@ class MainWindowController:
         self._ajustar_layout()
 
         self.simulador = SimuladorTelemetria()
-        self.disjuntor = Disjuntor()
+        self.disjuntor = self._carregar_disjuntor()
         self.medicoes = self._pre_carregar_medicoes()
 
-        self.comandos = ComandosController(self.janela, self.ui, self.disjuntor)
-        self.comandos.estado_disjuntor_alterado.connect(self._atualizar_disjuntor)
-        self.comandos.evento_registrado.connect(self._registrar_linha_historico)
+        self.historico = EventosController(self.janela, self.ui.tabela_historico)
+        self.comandos = ComandosController(self.janela, self.ui, self.disjuntor, self.historico)
+        self.corte = CorteController(self.janela, self.ui, self.disjuntor, self.historico, self._potencia_atual)
+        self.corte.estado_disjuntor_alterado.connect(self._atualizar_disjuntor)
+        self.corte.estado_disjuntor_alterado.connect(self.comandos.reavaliar_protecao)
+        self.limites = LimitesController(self.janela, self.ui, self.historico)
 
         self._configurar_grafico()
-        self._configurar_tabela_historico()
         self._redesenhar_grafico()
         self._atualizar_indicadores(self.medicoes[-1])
         self._atualizar_disjuntor()
         self.comandos.avaliar_protecao(self.medicoes[-1])
+        self.limites.avaliar(self.medicoes[-1])
 
         self.timer = QTimer(self.janela)
         self.timer.timeout.connect(self._simular_nova_medicao)
@@ -86,6 +93,19 @@ class MainWindowController:
             widget.setMinimumHeight(self.ALTURA_BOTOES)
         ui.btn_corte_emergencia.setMinimumHeight(self.ALTURA_BOTAO_CORTE)
 
+    @staticmethod
+    def _carregar_disjuntor():
+        """Cria o disjuntor com o status gravado no banco, para o dashboard abrir no
+        último estado conhecido em vez de sempre FECHADO."""
+        tag = Dispositivo.TAG_DISJUNTOR_PRINCIPAL
+        dispositivo = DispositivoRepository.buscar_por_tag(tag)
+        if dispositivo is None:
+            logger.warning("Disjuntor %s não encontrado no banco. Iniciando como FECHADO.", tag)
+            return Disjuntor()
+
+        logger.info("Estado do disjuntor %s carregado do banco: %s.", tag, dispositivo.status)
+        return Disjuntor(dispositivo.status, dispositivo.ultima_atualizacao)
+
     def _pre_carregar_medicoes(self):
         """Gera o histórico inicial com a janela inteira do gráfico já preenchida.
 
@@ -116,17 +136,9 @@ class MainWindowController:
         potencias = [medicao.calcular_potencia() for medicao in self.medicoes]
         self.curva_potencia.setData(self.eixo_x, potencias)
 
-    def _configurar_tabela_historico(self):
-        self.ui.tabela_historico.setColumnWidth(0, 150)
-        self.ui.tabela_historico.setColumnWidth(1, 180)
-
-    def _registrar_linha_historico(self, evento):
-        tabela = self.ui.tabela_historico
-        linha = 0
-        tabela.insertRow(linha)
-        for coluna, valor in enumerate(evento.get_linha_tabela()):
-            item = QTableWidgetItem(valor)
-            tabela.setItem(linha, coluna, item)
+    def _potencia_atual(self) -> float:
+        """Potência da medição mais recente, gravada no evento do corte de emergência."""
+        return self.medicoes[-1].calcular_potencia()
 
     def _atualizar_indicadores(self, medicao):
         dados = medicao.get_dados()
@@ -137,6 +149,7 @@ class MainWindowController:
     def _atualizar_disjuntor(self):
         dados = self.disjuntor.get_dados()
         self.ui.label_disjuntor_status.setText(dados["texto"])
+        self.ui.label_disjuntor_status.setToolTip(f"Última alteração: {dados['data_hora']}")
         self.ui.label_disjuntor_status.setStyleSheet(
             f"background-color: {dados['cor']}; color: white; "
             "border-radius: 6px; padding: 6px; font-weight: bold;"
@@ -153,3 +166,4 @@ class MainWindowController:
         self._atualizar_indicadores(medicao)
         self._atualizar_disjuntor()
         self.comandos.avaliar_protecao(medicao)
+        self.limites.avaliar(medicao)
