@@ -50,8 +50,38 @@ CRIAR_TABELA_LIMITES = """
     )
 """
 
+# Telemetria recebida da placa. A 200 Hz, gravar amostra por amostra encheria o banco:
+# cada linha é a média de uma janela de taxa_amostragem_ms, gravada em lote pelo
+# DatabaseWorker, e amostras diz quantas leituras da placa entraram nessa média.
+#
+# O horário é um inteiro em milissegundos desde 1970 (época Unix), o valor de
+# int(datetime.timestamp() * 1000). O TEXT com segundos usado em eventos não separa as
+# janelas de um mesmo segundo, e comparar inteiros é mais rápido para filtrar intervalos.
+#
+# Corrente e potência não têm CHECK de sinal: o sensor de corrente é bidirecional e
+# valores negativos são leituras válidas. Os typeof barram texto, como na tabela limites
+# (a afinidade da coluna já converte números inteiros em REAL e floats inteiros em INTEGER).
+CRIAR_TABELA_LEITURAS = """
+    CREATE TABLE IF NOT EXISTS leituras (
+        id           INTEGER PRIMARY KEY,
+        timestamp_ms INTEGER NOT NULL CHECK (typeof(timestamp_ms) = 'integer' AND timestamp_ms > 0),
+        tensao_v     REAL NOT NULL CHECK (typeof(tensao_v) = 'real' AND tensao_v >= 0),
+        corrente_a   REAL NOT NULL CHECK (typeof(corrente_a) = 'real'),
+        potencia_w   REAL NOT NULL CHECK (typeof(potencia_w) = 'real'),
+        amostras     INTEGER NOT NULL CHECK (typeof(amostras) = 'integer' AND amostras > 0)
+    )
+"""
+
 # Em um banco que já existia, o CREATE TABLE IF NOT EXISTS cria só as tabelas que faltam.
-CRIAR_TABELAS = (CRIAR_TABELA_DISPOSITIVOS, CRIAR_TABELA_EVENTOS, CRIAR_TABELA_LIMITES)
+CRIAR_TABELAS = (CRIAR_TABELA_DISPOSITIVOS, CRIAR_TABELA_EVENTOS, CRIAR_TABELA_LIMITES, CRIAR_TABELA_LEITURAS)
+
+# O histórico filtra e ordena as leituras pelo horário (últimas N ou um intervalo). Sem o
+# índice, cada consulta percorreria a tabela inteira, que cresce o tempo todo.
+CRIAR_INDICE_LEITURAS_TIMESTAMP = """
+    CREATE INDEX IF NOT EXISTS idx_leituras_timestamp_ms ON leituras (timestamp_ms)
+"""
+
+CRIAR_INDICES = (CRIAR_INDICE_LEITURAS_TIMESTAMP,)
 
 # Migração dos bancos criados antes da coluna unidade existir: o CREATE TABLE IF NOT
 # EXISTS não altera uma tabela que já existe. Mesma definição da coluna no CREATE TABLE.
@@ -74,4 +104,5 @@ COLUNAS_ESPERADAS = {
     "dispositivos": ("id", "tag", "tipo", "status", "ultima_atualizacao"),
     "eventos": ("id", "data_hora", "tipo_evento", "valor_medido", "descricao", "dispositivo_id", "unidade"),
     "limites": ("id", "parametro", "valor", "unidade", "dispositivo_id"),
+    "leituras": ("id", "timestamp_ms", "tensao_v", "corrente_a", "potencia_w", "amostras"),
 }

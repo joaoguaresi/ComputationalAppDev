@@ -43,14 +43,15 @@ class Database:
 
     @classmethod
     def init_db(cls) -> bool:
-        """Cria o banco e as tabelas se ainda não existirem, migra bancos de versões
-        anteriores, cadastra os dispositivos padrão e valida o esquema. Devolve False
-        se o banco não puder ser usado."""
+        """Cria o banco, as tabelas e os índices se ainda não existirem, migra bancos de
+        versões anteriores, cadastra os dispositivos padrão e valida o esquema. Devolve
+        False se o banco não puder ser usado."""
         try:
             os.makedirs(cls.PASTA_DATA, exist_ok=True)
             with closing(cls.get_connection()) as conn:
                 with conn:
-                    for comando in schema.CRIAR_TABELAS:
+                    # Os índices vêm depois das tabelas, porque cada um precisa da sua tabela.
+                    for comando in schema.CRIAR_TABELAS + schema.CRIAR_INDICES:
                         conn.execute(comando)
                     cls._migrar_esquema(conn)
 
