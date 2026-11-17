@@ -21,6 +21,7 @@ class BancoController(QObject):
     # liberar ainda consegue terminar antes de a interface desistir de esperar.
     TEMPO_MAXIMO_ENCERRAMENTO_MS = 7000
 
+    gravacao_solicitada = Signal(list)
     encerramento_solicitado = Signal()
 
     def __init__(self, parent=None):
@@ -34,6 +35,7 @@ class BancoController(QObject):
         self.worker.moveToThread(self.thread_banco)
 
         self.thread_banco.started.connect(self.worker.abrir)
+        self.gravacao_solicitada.connect(self.worker.gravar_leituras)
         self.encerramento_solicitado.connect(self.worker.encerrar)
         # O worker vive na thread do banco: o deleteLater dele é atendido quando ela termina.
         self.thread_banco.finished.connect(self.worker.deleteLater)
@@ -41,6 +43,14 @@ class BancoController(QObject):
     def iniciar(self):
         self.thread_banco.start()
         logger.info("Thread do banco iniciada; a interface roda na thread %d.", threading.get_ident())
+
+    def gravar_leituras(self, leituras):
+        """Entrega um lote de LeituraTelemetria ao worker, que grava a média de cada janela.
+
+        Volta na hora: a gravação acontece na thread do banco. A lista é copiada porque
+        quem chamou pode continuar enchendo a dele enquanto o worker lê esta.
+        """
+        self.gravacao_solicitada.emit(list(leituras))
 
     def encerrar(self):
         """Encerramento cooperativo: pede ao worker que pare e espera a thread terminar.
