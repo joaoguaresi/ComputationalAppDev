@@ -2,8 +2,10 @@ import logging
 from collections import deque
 
 from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import QApplication
 import pyqtgraph as pg
 
+from controllers.banco_controller import BancoController
 from controllers.comandos_controller import ComandosController
 from controllers.corte_controller import CorteController
 from controllers.eventos_controller import EventosController
@@ -32,6 +34,12 @@ class MainWindowController:
         self.ui = Ui_JanelaPrincipal()
         self.ui.setupUi(janela)
         self._ajustar_layout()
+
+        # Thread do banco: começa com o dashboard e é encerrada no aboutToQuit, que o Qt
+        # emite antes de a aplicação fechar.
+        self.banco = BancoController(self.janela)
+        self.banco.iniciar()
+        QApplication.instance().aboutToQuit.connect(self.banco.encerrar)
 
         self.simulador = SimuladorTelemetria()
         self.disjuntor = self._carregar_disjuntor()
