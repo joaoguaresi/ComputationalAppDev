@@ -142,6 +142,28 @@ Operações, anomalias e erros são registrados em `logs/smartgrid.log`, com dat
 4. **Falha transacional com ROLLBACK**: siga a [Demonstração do ROLLBACK](#demonstração-do-rollback).
 5. **Auditoria**: abra `logs/smartgrid.log` e mostre as linhas `WARNING` (entradas inválidas e limite violado) e `ERROR` (rollback do corte).
 
+## Montagem de bancada e protocolo serial (A1/5)
+
+A placa é um Arduino Uno com o firmware oficial do professor (`codigo_arduino.ino`), que não pode ser alterado. A montagem de desenvolvimento segue o manual:
+
+| Componente | Ligação |
+| --- | --- |
+| Potenciômetro 1 (simula a tensão) | Extremidades em 5V e GND, cursor no A0 |
+| Potenciômetro 2 (simula a corrente) | Extremidades em 5V e GND, cursor no A1 |
+| Push button | Um lado no 5V; o outro no pino 11 e num resistor de 10 kΩ para o GND |
+| LED + resistor (simula o relé) | Ânodo no pino 12, cátodo pelo resistor ao GND |
+| Osciloscópio | Ponta no pino 13, terra no GND |
+
+- O LED acende quando o relé está **desligado**: o firmware usa o relé em nível baixo (`RELE_ACTIVE_LOW = true`). A tela segue o STATUS_RELE da telemetria, que está correto.
+- O pino 13 inverte a cada amostra: o osciloscópio mostra uma onda de 100 Hz, ou seja, 200 amostras por segundo.
+- Primeiro teste sem Python: no Monitor Serial da Arduino IDE, em 9600 e com fim de linha "Nova linha", envie `!S115200`, troque o monitor para 115200 e os pacotes `$DAT` aparecem. Feche o Monitor Serial antes de rodar o programa.
+
+**Protocolo** (`models/protocolo.py`): o desktop abre a porta em 9600, espera a linha `PLACA EM ESPERA (9600 baud)`, envia `!S<taxa>` e lê `>>> ACK: INICIANDO EM <taxa> BPS <<<` ainda em 9600. Depois a telemetria chega como `$DAT,<A0>,<A1>,<STATUS_RELE>,<STATUS_BOTAO>*<CHECKSUM>`, com checksum XOR dos caracteres entre `$` e `*`. Os comandos `!1`, `!0` e `!T` ligam, desligam e alternam o relé, e `!P` pausa a placa e a devolve para 9600.
+
+**Conversão** (`models/leitura_telemetria.py`): tensão = A0 × 12/1023 V; corrente = (A1 − zero) × (5/1023) / 0,066 A, com o zero em 512 na montagem. A corrente e a potência podem ser negativas, porque o sensor ACS712 é bidirecional.
+
+**Testes**: na raiz do projeto, rode `python -m unittest`. Eles usam linhas iguais às do firmware e não precisam da placa. Observação: o exemplo de checksum do manual (`$DAT,512,716,1,0*2C`) tem um erro de conta na tabela passo a passo (75 XOR 44 = 103, não 119); o checksum correto desse pacote, que o firmware envia, é `56`.
+
 ## Como executar
 
 ```
