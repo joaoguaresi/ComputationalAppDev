@@ -54,8 +54,8 @@ CRIAR_TABELA_LIMITES = """
 # cada linha é a média de uma janela de taxa_amostragem_ms, gravada em lote pelo
 # DatabaseWorker, e amostras diz quantas leituras da placa entraram nessa média.
 #
-# O horário é um inteiro em milissegundos desde 1970 (época Unix), o valor de
-# int(datetime.timestamp() * 1000). O TEXT com segundos usado em eventos não separa as
+# O horário é um inteiro em milissegundos desde 1970 (época Unix), convertido por
+# LeituraMedia.para_ms(). O TEXT com segundos usado em eventos não separa as
 # janelas de um mesmo segundo, e comparar inteiros é mais rápido para filtrar intervalos.
 #
 # Corrente e potência não têm CHECK de sinal: o sensor de corrente é bidirecional e
