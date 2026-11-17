@@ -15,6 +15,9 @@ class EventosController(QObject):
     A tabela da tela não guarda dados próprios. Ela é preenchida pelo banco na
     inicialização (EventoRepository.listar_todos) e cada evento novo só aparece nela
     depois de gravado no SQLite, pelo sinal evento_registrado.
+
+    Os eventos novos são gravados pelo DatabaseWorker, na thread do banco: registrar()
+    só faz o pedido, e a linha entra na tabela quando o worker confirma a gravação.
     """
 
     LARGURA_DATA_HORA = 150
@@ -24,13 +27,16 @@ class EventosController(QObject):
     # Emitido depois que o evento foi gravado no banco.
     evento_registrado = Signal(object)
 
-    def __init__(self, janela, tabela):
+    def __init__(self, janela, tabela, banco):
         super().__init__(janela)
         self.janela = janela
         self.tabela = tabela
+        self.banco = banco
 
         self._configurar_colunas()
         self.evento_registrado.connect(self._adicionar_linha)
+        self.banco.evento_gravado.connect(self.evento_registrado)
+        self.banco.evento_nao_gravado.connect(self._avisar_falha_na_gravacao)
 
         self.carregar_historico()
 
@@ -83,26 +89,22 @@ class EventosController(QObject):
         self._agendar_ajuste_das_linhas()
         logger.info("Histórico de eventos carregado do banco: %d registro(s).", len(eventos))
 
-    def registrar(self, evento) -> bool:
-        """Grava o evento no banco e, só depois, o mostra na tabela.
+    def registrar(self, evento):
+        """Pede ao DatabaseWorker que grave o evento e volta na hora.
 
-        Devolve False se a gravação falhar: nesse caso o evento não aparece na tabela,
-        que sempre mostra o que está gravado no banco.
+        O evento só aparece na tabela quando o worker confirma a gravação (evento_gravado).
+        Se ela falhar, ele não aparece: a tabela sempre mostra o que está gravado no banco.
         """
-        try:
-            EventoRepository.inserir(evento)
-        except sqlite3.Error as erro:
-            logger.error("Falha ao gravar o evento '%s' no histórico: %s", evento.tipo, erro)
-            # Aviso na barra de status em vez de QMessageBox: estes eventos também nascem
-            # do timer da telemetria, e uma janela modal a cada falha travaria o dashboard.
-            self.janela.statusBar().showMessage(
-                "Falha ao gravar um evento no histórico. Detalhes em logs/smartgrid.log.",
-                self.DURACAO_AVISO_MS,
-            )
-            return False
+        self.banco.registrar_evento(evento)
 
-        self.evento_registrado.emit(evento)
-        return True
+    def _avisar_falha_na_gravacao(self, evento, motivo):
+        # O worker já registrou o ERROR no log. Aviso na barra de status em vez de
+        # QMessageBox: estes eventos também nascem da telemetria, e uma janela modal a
+        # cada falha travaria o dashboard.
+        self.janela.statusBar().showMessage(
+            f"Falha ao gravar o evento '{evento.tipo}' no histórico. Detalhes em logs/smartgrid.log.",
+            self.DURACAO_AVISO_MS,
+        )
 
     def publicar(self, evento):
         """Mostra um evento já gravado dentro de outra transação, como a do corte

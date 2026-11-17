@@ -6,6 +6,8 @@ from PySide6.QtCore import QObject, Signal, Slot
 
 from database.connection import Database
 from models.agregador_leituras import AgregadorLeituras
+from models.evento_historico import EventoHistorico
+from models.evento_repository import EventoRepository
 from models.leitura_repository import LeituraRepository
 
 logger = logging.getLogger("smartgrid")
@@ -25,6 +27,10 @@ class DatabaseWorker(QObject):
     """
 
     falhou = Signal(str)
+
+    # Respostas dos pedidos de evento, entregues na thread da interface pela fila dela.
+    evento_gravado = Signal(object)
+    evento_nao_gravado = Signal(object, str)
 
     def __init__(self):
         # Sem pai: o moveToThread não aceita um objeto que tem pai.
@@ -59,6 +65,45 @@ class DatabaseWorker(QObject):
         for leitura in leituras:
             janelas.extend(self._agregador.adicionar(leitura))
         self._gravar_janelas(janelas)
+
+    @Slot(object)
+    def registrar_evento(self, evento):
+        """Grava um EventoHistorico e avisa a interface com evento_gravado.
+
+        A tabela do dashboard só ganha a linha quando esse sinal chega: ela mostra apenas
+        o que está gravado no banco. Se a gravação falhar, o evento volta pelo
+        evento_nao_gravado com o motivo.
+        """
+        if self._conn is None:
+            logger.error("Evento '%s' não gravado: a conexão do DatabaseWorker não está aberta.", evento.tipo)
+            self.evento_nao_gravado.emit(evento, "a conexão com o banco não está aberta")
+            return
+
+        try:
+            with self._conn:
+                EventoRepository.inserir(evento, conn=self._conn)
+        except sqlite3.Error as erro:
+            logger.error("Falha ao gravar o evento '%s' no histórico. Rollback executado: %s.", evento.tipo, erro)
+            self.evento_nao_gravado.emit(evento, str(erro))
+            return
+
+        self.evento_gravado.emit(evento)
+
+    @Slot(int, object)
+    def registrar_rele_espontaneo(self, status_rele, momento):
+        """Relé que mudou sem comando do operador (RastreadorRele.ESPONTANEO).
+
+        É uma anomalia de hardware: vai para o log como WARNING e para o histórico. O
+        momento é o da detecção, não o da gravação, que pode vir alguns milissegundos depois.
+        """
+        logger.warning("Relé de emergência mudou sem comando do operador: STATUS_RELE = %d.", status_rele)
+        self.registrar_evento(EventoHistorico.rele_espontaneo(status_rele, momento))
+
+    @Slot(object)
+    def registrar_botao_local(self, momento):
+        """Aperto confirmado do botão da bancada (DetectorBotao), o disparo local do disjuntor."""
+        logger.warning("Botão local da bancada pressionado: disparo do disjuntor solicitado.")
+        self.registrar_evento(EventoHistorico.botao_local(momento))
 
     @Slot()
     def encerrar(self):

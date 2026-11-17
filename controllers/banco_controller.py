@@ -1,5 +1,6 @@
 import logging
 import threading
+from datetime import datetime
 
 from PySide6.QtCore import QObject, QThread, Signal
 
@@ -22,7 +23,14 @@ class BancoController(QObject):
     TEMPO_MAXIMO_ENCERRAMENTO_MS = 7000
 
     gravacao_solicitada = Signal(list)
+    evento_solicitado = Signal(object)
+    rele_espontaneo_solicitado = Signal(int, object)
+    botao_local_solicitado = Signal(object)
     encerramento_solicitado = Signal()
+
+    # Repassam as respostas do worker, já na thread da interface.
+    evento_gravado = Signal(object)
+    evento_nao_gravado = Signal(object, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -36,7 +44,15 @@ class BancoController(QObject):
 
         self.thread_banco.started.connect(self.worker.abrir)
         self.gravacao_solicitada.connect(self.worker.gravar_leituras)
+        self.evento_solicitado.connect(self.worker.registrar_evento)
+        self.rele_espontaneo_solicitado.connect(self.worker.registrar_rele_espontaneo)
+        self.botao_local_solicitado.connect(self.worker.registrar_botao_local)
         self.encerramento_solicitado.connect(self.worker.encerrar)
+
+        # Sinal ligado a sinal: o worker emite na thread do banco e o Qt reemite estes na
+        # thread da interface, onde ficam os controllers que atualizam a tela.
+        self.worker.evento_gravado.connect(self.evento_gravado)
+        self.worker.evento_nao_gravado.connect(self.evento_nao_gravado)
         # O worker vive na thread do banco: o deleteLater dele é atendido quando ela termina.
         self.thread_banco.finished.connect(self.worker.deleteLater)
 
@@ -51,6 +67,20 @@ class BancoController(QObject):
         quem chamou pode continuar enchendo a dele enquanto o worker lê esta.
         """
         self.gravacao_solicitada.emit(list(leituras))
+
+    def registrar_evento(self, evento):
+        """Pede a gravação de um EventoHistorico; a resposta vem por evento_gravado ou
+        evento_nao_gravado."""
+        self.evento_solicitado.emit(evento)
+
+    def registrar_rele_espontaneo(self, status_rele, momento=None):
+        """Relé que mudou sem comando (RastreadorRele.ESPONTANEO). O momento padrão é o
+        da chamada, ou seja, o da detecção."""
+        self.rele_espontaneo_solicitado.emit(status_rele, momento or datetime.now())
+
+    def registrar_botao_local(self, momento=None):
+        """Aperto confirmado do botão da bancada (DetectorBotao)."""
+        self.botao_local_solicitado.emit(momento or datetime.now())
 
     def encerrar(self):
         """Encerramento cooperativo: pede ao worker que pare e espera a thread terminar.

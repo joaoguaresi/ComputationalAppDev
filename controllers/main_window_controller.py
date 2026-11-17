@@ -45,7 +45,7 @@ class MainWindowController:
         self.disjuntor = self._carregar_disjuntor()
         self.medicoes = self._pre_carregar_medicoes()
 
-        self.historico = EventosController(self.janela, self.ui.tabela_historico)
+        self.historico = EventosController(self.janela, self.ui.tabela_historico, self.banco)
         self.comandos = ComandosController(self.janela, self.ui, self.disjuntor, self.historico)
         self.corte = CorteController(self.janela, self.ui, self.disjuntor, self.historico, self._potencia_atual)
         self.corte.estado_disjuntor_alterado.connect(self._atualizar_disjuntor)
