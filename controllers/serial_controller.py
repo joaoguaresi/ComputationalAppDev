@@ -12,9 +12,9 @@ logger = logging.getLogger("smartgrid")
 class SerialController(QObject):
     """Cria o SerialWorker numa QThread e controla o ciclo de vida dela.
 
-    Vive na thread da interface. Os pedidos da interface (conectar e desconectar)
-    entram na fila do worker e voltam na hora, sem esperar a placa. As respostas
-    chegam pelos sinais daqui, que o Qt reemite na thread da interface.
+    Vive na thread da interface. Os pedidos da interface (conectar, desconectar e os
+    comandos do relé) entram na fila do worker e voltam na hora, sem esperar a placa.
+    As respostas chegam pelos sinais daqui, que o Qt reemite na thread da interface.
     """
 
     estado_alterado = Signal(str, str)
@@ -24,6 +24,9 @@ class SerialController(QObject):
     falha_conexao = Signal(str)
     conexao_perdida = Signal(str)
     leituras_recebidas = Signal(list)
+    rele_inicial = Signal(int)
+    rele_confirmado = Signal(int)
+    rele_nao_confirmado = Signal(int, str)
 
     def __init__(self, parent=None, **opcoes_worker):
         """opcoes_worker vai para o SerialWorker; os testes passam uma placa simulada."""
@@ -51,6 +54,9 @@ class SerialController(QObject):
         self.worker.falha_conexao.connect(self.falha_conexao)
         self.worker.conexao_perdida.connect(self.conexao_perdida)
         self.worker.leituras_recebidas.connect(self.leituras_recebidas)
+        self.worker.rele_inicial.connect(self.rele_inicial)
+        self.worker.rele_confirmado.connect(self.rele_confirmado)
+        self.worker.rele_nao_confirmado.connect(self.rele_nao_confirmado)
 
     def _guardar_estado(self, estado, _detalhe):
         self.estado = estado
@@ -65,6 +71,17 @@ class SerialController(QObject):
 
     def desconectar(self):
         self.worker.pedir_desconexao()
+
+    def enviar_comando_rele(self, status_rele):
+        """Pede o !1 (1) ou o !0 (0) à placa; a resposta vem por rele_confirmado ou rele_nao_confirmado.
+
+        Sem conexão, o pedido é recusado na hora: o corte e o religamento só valem com a
+        placa confirmando.
+        """
+        if not self.esta_conectado():
+            self.rele_nao_confirmado.emit(status_rele, "a placa não está conectada")
+            return
+        self.worker.pedir_rele(status_rele)
 
     def esta_conectado(self) -> bool:
         return self.estado == ConfiguracaoSerial.CONECTADO

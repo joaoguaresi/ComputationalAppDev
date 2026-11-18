@@ -23,8 +23,9 @@ class CorteController(QObject):
        disjuntor e os eventos do histórico;
     4. só depois do COMMIT a tela muda.
 
-    Enquanto o SerialWorker (Bloco 3) não existe, o MainWindowController liga o pedido
-    direto ao confirmar_rele(): a placa é simulada e confirma o comando na hora.
+    O MainWindowController liga o pedido ao SerialController: a thread serial envia o
+    !0 ou o !1 e responde com rele_confirmado (ligado ao confirmar_rele) ou
+    rele_nao_confirmado (ligado ao recusar_rele). Sem placa conectada, a recusa é na hora.
 
     Para demonstrar o ROLLBACK, o atalho Ctrl+Shift+F liga uma falha simulada que
     interrompe a gravação do corte entre a atualização do disjuntor e o registro do evento.

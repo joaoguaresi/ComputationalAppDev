@@ -16,6 +16,10 @@ from models.protocolo import (
     SUFIXO_ACK_TAXA,
     TAXA_INICIAL,
     TAXAS_SUPORTADAS,
+    TEXTO_ACK_PAUSA,
+    TEXTO_ACK_RELE_ALTERNADO,
+    TEXTO_ACK_RELE_DESLIGADO,
+    TEXTO_ACK_RELE_LIGADO,
     TEXTO_BANNER,
     TEXTO_ERR_TAXA,
     montar_pacote_dados,
@@ -40,6 +44,7 @@ class PlacaSimulada:
         self.recusar_taxa = recusar_taxa
         self.rele_ao_ligar = rele_ao_ligar
         self.transmitir_apos_ack = True
+        self.responder_rele = True
 
         # Entradas da placa: os testes mudam estes valores a qualquer momento.
         self.a0 = a0
@@ -160,6 +165,29 @@ class PlacaSimulada:
     def _executar(self, comando):
         if comando.startswith("!S"):
             self._iniciar(comando[2:])
+        elif comando in ("!P", "!STOP"):
+            self._pausar()
+        elif comando in ("!1", "!0", "!T"):
+            self._comandar_rele(comando)
+
+    def _pausar(self):
+        """!P: confirma na taxa atual, para a amostragem e volta a 9600."""
+        self._enviar(TEXTO_ACK_PAUSA)
+        self.transmitindo = False
+        self.taxa_placa = TAXA_INICIAL
+
+    def _comandar_rele(self, comando):
+        if not self.responder_rele:
+            return
+        if comando == "!1":
+            self.rele = 1
+            self._enviar(TEXTO_ACK_RELE_LIGADO)
+        elif comando == "!0":
+            self.rele = 0
+            self._enviar(TEXTO_ACK_RELE_DESLIGADO)
+        else:
+            self.rele = 1 - self.rele
+            self._enviar(TEXTO_ACK_RELE_ALTERNADO)
 
     def _iniciar(self, taxa_pedida):
         """!S<taxa>: responde na taxa atual e só depois passa para a nova."""

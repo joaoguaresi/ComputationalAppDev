@@ -1,10 +1,7 @@
 import logging
 
 from PySide6.QtCore import QObject, Signal
-from PySide6.QtWidgets import QMessageBox
 
-from models.config_manager import ConfigManager
-from models.configuracao_serial import ConfiguracaoSerial
 from models.evento_historico import EventoHistorico
 from models.regra_alerta import RegraAlerta
 
@@ -12,13 +9,12 @@ logger = logging.getLogger("smartgrid")
 
 
 class ComandosController(QObject):
-    """Proteção local por setpoint e painel serial.
+    """Proteção local por setpoint de potência.
 
-    O corte de emergência e o religamento ficam no CorteController, e os limites de
-    segurança (regras de alerta) no LimitesController. Os eventos gerados aqui são
-    gravados no banco pelo EventosController. Nesta etapa a conexão serial é
-    simulada: o painel só atualiza o status visual, sem comunicação real com o
-    microcontrolador.
+    O corte de emergência e o religamento ficam no CorteController, os limites de
+    segurança (regras de alerta) no LimitesController e o painel serial no
+    PainelSerialController. Os eventos gerados aqui são gravados no banco pelo
+    EventosController.
     """
 
     FATOR_ATENCAO = 0.9
@@ -57,55 +53,19 @@ class ComandosController(QObject):
             self.ui.spin_setpoint.value(),
             descricao="Setpoint de potência do dashboard",
         )
-        self.serial = ConfiguracaoSerial()
 
         self.medicao_atual = None
         self.nivel_atual = ComandosController.NORMAL
+        # Fundo da janela aplicado por último: com a telemetria chegando 10 vezes por
+        # segundo, o stylesheet da janela inteira só é refeito quando o nível muda.
+        self._fundo_aplicado = None
 
-        self._preencher_painel_serial()
         self._conectar_sinais()
-        self._atualizar_status_serial()
         self._aplicar_nivel(ComandosController.NORMAL)
-
-    # ------------------------------------------------------------------
-    # Configuração inicial
-    # ------------------------------------------------------------------
-
-    def _preencher_painel_serial(self):
-        """Preenche as opções do painel e seleciona a porta e o baud rate salvos no config.json."""
-        self.ui.combo_porta.addItems(ConfiguracaoSerial.listar_portas())
-        for baud_rate in ConfiguracaoSerial.BAUD_RATES:
-            self.ui.combo_baudrate.addItem(str(baud_rate), baud_rate)
-
-        porta = ConfigManager.get("porta_com")
-        baud_rate = ConfigManager.get("baud_rate")
-        self._selecionar_item(self.ui.combo_porta, self.ui.combo_porta.findText(str(porta)), "Porta COM", porta)
-        self._selecionar_item(self.ui.combo_baudrate, self.ui.combo_baudrate.findData(baud_rate), "Baud rate", baud_rate)
-
-        self.ui.spin_timeout.setValue(self.serial.timeout_ms)
-        self.serial.porta = self.ui.combo_porta.currentText()
-        self.serial.baud_rate = self.ui.combo_baudrate.currentData()
-
-    @staticmethod
-    def _selecionar_item(combo, indice, campo, valor_salvo):
-        """Seleciona o item salvo; se ele não existir na lista, mantém o primeiro e avisa no log."""
-        if indice < 0:
-            logger.warning(
-                "%s '%s' do config.json não está disponível. Usando %s.",
-                campo, valor_salvo, combo.itemText(0),
-            )
-            indice = 0
-        combo.setCurrentIndex(indice)
 
     def _conectar_sinais(self):
         self.ui.spin_setpoint.valueChanged.connect(self._ao_alterar_setpoint)
         self.ui.slider_setpoint.valueChanged.connect(self._ao_arrastar_slider)
-
-        self.ui.combo_porta.currentTextChanged.connect(self._ao_alterar_porta)
-        self.ui.combo_baudrate.currentIndexChanged.connect(self._ao_alterar_baudrate)
-        self.ui.spin_timeout.valueChanged.connect(self._ao_alterar_timeout)
-        self.ui.btn_conectar.clicked.connect(self._ao_conectar)
-        self.ui.btn_desconectar.clicked.connect(self._ao_desconectar)
 
     # ------------------------------------------------------------------
     # Proteção local por setpoint
@@ -159,12 +119,14 @@ class ComandosController(QObject):
         self.nivel_atual = nivel
 
         fundo = ComandosController.CORES_FUNDO[nivel]
-        if fundo:
-            self.ui.central_widget.setStyleSheet(
-                f"QWidget#central_widget {{ background-color: {fundo}; }}"
-            )
-        else:
-            self.ui.central_widget.setStyleSheet("")
+        if fundo != self._fundo_aplicado:
+            self._fundo_aplicado = fundo
+            if fundo:
+                self.ui.central_widget.setStyleSheet(
+                    f"QWidget#central_widget {{ background-color: {fundo}; }}"
+                )
+            else:
+                self.ui.central_widget.setStyleSheet("")
 
         cor = ComandosController.CORES_ALERTA[nivel]
         self.ui.label_alerta_status.setText(self._montar_texto_alerta(nivel, potencia))
@@ -198,66 +160,6 @@ class ComandosController(QObject):
 
     def _ao_arrastar_slider(self, valor):
         self.ui.spin_setpoint.setValue(float(valor))
-
-    # ------------------------------------------------------------------
-    # Painel serial (somente visual nesta etapa)
-    # ------------------------------------------------------------------
-
-    def _ao_alterar_porta(self, porta):
-        self.serial.porta = porta
-        ConfigManager.set("porta_com", porta)
-
-    def _ao_alterar_baudrate(self, indice):
-        self.serial.baud_rate = self.ui.combo_baudrate.itemData(indice)
-        ConfigManager.set("baud_rate", self.serial.baud_rate)
-
-    def _ao_alterar_timeout(self, valor):
-        self.serial.timeout_ms = valor
-
-    def _ao_conectar(self):
-        if not self.serial.conectar():
-            logger.warning(
-                "Configuração serial inválida: porta %s, %s bps, timeout %s ms.",
-                self.serial.porta, self.serial.baud_rate, self.serial.timeout_ms,
-            )
-            QMessageBox.warning(
-                self.janela,
-                "Configuração inválida",
-                "Verifique a porta COM, o baud rate e o timeout antes de conectar.",
-            )
-            return
-
-        self._atualizar_status_serial()
-        logger.info("Conexão serial simulada aberta em %s @ %s bps.", self.serial.porta, self.serial.baud_rate)
-        self._registrar_evento(
-            EventoHistorico.CONEXAO_SERIAL,
-            f"Conexão simulada aberta em {self.serial.porta} "
-            f"({self.serial.baud_rate} bps, timeout {self.serial.timeout_ms} ms)",
-        )
-
-    def _ao_desconectar(self):
-        self.serial.desconectar()
-        self._atualizar_status_serial()
-        logger.info("Conexão serial simulada encerrada.")
-        self._registrar_evento(
-            EventoHistorico.CONEXAO_SERIAL, "Conexão simulada encerrada pelo operador"
-        )
-
-    def _atualizar_status_serial(self):
-        dados = self.serial.get_dados()
-        conectado = self.serial.esta_conectado()
-
-        self.ui.label_serial_status.setText(dados["texto"])
-        self.ui.label_serial_status.setStyleSheet(
-            f"background-color: {dados['cor']}; color: white; "
-            "border-radius: 6px; padding: 6px; font-weight: bold;"
-        )
-
-        self.ui.btn_conectar.setEnabled(not conectado)
-        self.ui.btn_desconectar.setEnabled(conectado)
-        self.ui.combo_porta.setEnabled(not conectado)
-        self.ui.combo_baudrate.setEnabled(not conectado)
-        self.ui.spin_timeout.setEnabled(not conectado)
 
     # ------------------------------------------------------------------
     # Histórico

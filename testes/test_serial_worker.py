@@ -22,6 +22,7 @@ logging.getLogger("smartgrid").addHandler(logging.NullHandler())
 app = QCoreApplication.instance() or QCoreApplication([])
 
 PORTA = "COM9"
+PORTAS = [(PORTA, "Placa simulada (COM9)", True)]
 DESCONECTADO = ConfiguracaoSerial.DESCONECTADO
 CONECTANDO = ConfiguracaoSerial.CONECTANDO
 NEGOCIANDO = ConfiguracaoSerial.NEGOCIANDO
@@ -56,6 +57,7 @@ class TesteSerial(unittest.TestCase):
         worker.TEMPO_PRIMEIRA_TELEMETRIA_S = 0.5
         worker.AMOSTRAS_CALIBRACAO = 10
         worker.TEMPO_CALIBRACAO_S = 0.3
+        worker.PRAZO_RELE_S = 0.3
 
     def setUp(self):
         # Configuração só em memória: o worker lê o config.json, e o de verdade não pode mudar.
@@ -63,7 +65,7 @@ class TesteSerial(unittest.TestCase):
         ConfigManager._dados = dict(ConfigManager.DEFAULTS)
 
         self.placa = self.criar_placa()
-        self.serial = SerialController(abrir_porta=self.placa.abrir, listar_portas=lambda: [PORTA])
+        self.serial = SerialController(abrir_porta=self.placa.abrir, listar_portas=lambda: PORTAS)
         self.encurtar_tempos(self.serial.worker)
 
         self.sinais = []
@@ -90,7 +92,7 @@ class TesteSerial(unittest.TestCase):
 class TestMaquinaDeEstados(TesteSerial):
     def test_comeca_desconectado_e_lista_as_portas(self):
         self.assertTrue(esperar(lambda: self.recebidos("portas_listadas")))
-        self.assertEqual(self.recebidos("portas_listadas")[0], ([PORTA],))
+        self.assertEqual(self.recebidos("portas_listadas")[0], (PORTAS,))
         self.assertEqual(self.estados()[0], DESCONECTADO)
 
     def test_conectar_abre_a_porta_em_9600(self):
@@ -278,6 +280,86 @@ class TestTelemetria(TesteSerial):
         self.assertTrue(esperar(lambda: self.recebidos("conexao_perdida")))
         self.assertIn("erro na porta serial", self.recebidos("conexao_perdida")[0][0])
         self.assertEqual(self.serial.estado, DESCONECTADO)
+
+
+class TestRele(TesteSerial):
+    SINAIS = TesteSerial.SINAIS + ("rele_inicial", "rele_confirmado", "rele_nao_confirmado")
+
+    def test_estado_inicial_do_rele_e_informado(self):
+        self.conectar()
+        self.assertTrue(esperar(lambda: self.recebidos("rele_inicial")))
+        self.assertEqual(self.recebidos("rele_inicial"), [(0,)])
+
+    def test_comando_confirmado_por_ack_e_status_rele(self):
+        self.conectar()
+        self.serial.enviar_comando_rele(1)
+        self.assertTrue(esperar(lambda: self.recebidos("rele_confirmado")))
+        self.assertEqual(self.recebidos("rele_confirmado"), [(1,)])
+        self.assertIn("!1\n", self.placa.comandos)
+
+        self.serial.enviar_comando_rele(0)
+        self.assertTrue(esperar(lambda: len(self.recebidos("rele_confirmado")) == 2))
+        self.assertEqual(self.recebidos("rele_confirmado")[-1], (0,))
+        self.assertEqual(self.recebidos("rele_nao_confirmado"), [])
+
+    def test_comando_sem_resposta_da_placa_expira(self):
+        self.conectar()
+        self.placa.responder_rele = False
+        self.serial.enviar_comando_rele(1)
+        self.assertTrue(esperar(lambda: self.recebidos("rele_nao_confirmado")))
+        status, motivo = self.recebidos("rele_nao_confirmado")[0]
+        self.assertEqual(status, 1)
+        self.assertIn("sem ACK", motivo)
+        self.assertEqual(self.recebidos("rele_confirmado"), [])
+
+    def test_sem_conexao_o_comando_e_recusado_na_hora(self):
+        self.serial.enviar_comando_rele(0)
+        # Recusado já na thread da interface, sem passar pela placa.
+        self.assertEqual(self.recebidos("rele_nao_confirmado"), [(0, "a placa não está conectada")])
+        self.assertEqual(self.placa.comandos, [])
+
+    def test_segundo_comando_antes_da_confirmacao_e_recusado(self):
+        self.conectar()
+        self.placa.responder_rele = False
+        self.serial.enviar_comando_rele(1)
+        self.serial.enviar_comando_rele(0)
+        self.assertTrue(esperar(lambda: self.recebidos("rele_nao_confirmado")))
+        self.assertEqual(self.recebidos("rele_nao_confirmado")[0][0], 0)
+        self.assertIn("ainda não confirmou", self.recebidos("rele_nao_confirmado")[0][1])
+
+    def test_desconectar_pausa_a_placa_e_recusa_o_pendente(self):
+        self.conectar()
+        self.placa.responder_rele = False
+        self.serial.enviar_comando_rele(1)
+        self.assertTrue(esperar(lambda: "!1\n" in self.placa.comandos))
+        self.serial.desconectar()
+        self.assertTrue(esperar(lambda: self.recebidos("desconectado")))
+        self.assertEqual(self.recebidos("desconectado"), [("encerrada pelo operador",)])
+        self.assertEqual(self.placa.comandos[-1], "!P\n")
+        self.assertFalse(self.placa.transmitindo)
+        self.assertEqual(self.recebidos("rele_nao_confirmado")[0][0], 1)
+
+
+class TestConfiguracaoSerial(unittest.TestCase):
+    def test_quatro_taxas_com_115200_padrao(self):
+        self.assertEqual(ConfiguracaoSerial.BAUD_RATES, [9600, 19200, 38400, 115200])
+        self.assertEqual(ConfiguracaoSerial().baud_rate, 115200)
+
+    def test_texto_do_estado_para_o_painel(self):
+        config = ConfiguracaoSerial("COM5")
+        self.assertEqual(config.get_texto_status(), "DESCONECTADO")
+        config.atualizar_estado(CONECTADO, "COM5 @ 115200 bps")
+        self.assertEqual(config.get_texto_status(), "CONECTADO: COM5 @ 115200 bps")
+        self.assertEqual(config.get_cor_status(), "#2ECC71")
+
+    def test_descricao_da_porta_no_combo(self):
+        self.assertEqual(ConfiguracaoSerial.descrever_porta("COM5", "USB-SERIAL CH340 (COM5)"), "COM5 - USB-SERIAL CH340")
+        self.assertEqual(ConfiguracaoSerial.descrever_porta("COM5", "n/a"), "COM5")
+
+    def test_validacao(self):
+        self.assertFalse(ConfiguracaoSerial("").validar())
+        self.assertFalse(ConfiguracaoSerial("COM5", 57600).validar())
+        self.assertTrue(ConfiguracaoSerial("COM5", 38400).validar())
 
 
 class TestLeitorLinhas(unittest.TestCase):

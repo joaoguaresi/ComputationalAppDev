@@ -11,7 +11,11 @@ from models.config_manager import ConfigManager
 from models.configuracao_serial import ConfiguracaoSerial
 from models.leitor_linhas import LeitorLinhas
 from models.leitura_telemetria import Calibracao, LeituraTelemetria, MediaMovel
+from models.rastreador_rele import RastreadorRele
 from models.protocolo import (
+    COMANDO_PAUSA,
+    COMANDO_RELE_DESLIGA,
+    COMANDO_RELE_LIGA,
     TAXA_INICIAL,
     LinhaSerial,
     ProtocoloError,
@@ -105,9 +109,12 @@ class SerialWorker(QObject):
     INTERVALO_AVISO_DESCARTE_S = 10.0
     # Média móvel da corrente: 10 amostras são 50 ms a 200 Hz.
     JANELA_MEDIA_CORRENTE = 10
+    # Prazo para a placa confirmar o !0/!1 (ACK e STATUS_RELE no valor pedido).
+    PRAZO_RELE_S = RastreadorRele.PRAZO_PADRAO_S
 
     _CONECTAR = "CONECTAR"
     _DESCONECTAR = "DESCONECTAR"
+    _RELE = "RELE"
 
     estado_alterado = Signal(str, str)  # estado e detalhe para o painel
     portas_listadas = Signal(list)
@@ -116,6 +123,9 @@ class SerialWorker(QObject):
     falha_conexao = Signal(str)         # motivo
     conexao_perdida = Signal(str)       # motivo
     leituras_recebidas = Signal(list)   # lote de LeituraTelemetria
+    rele_inicial = Signal(int)          # STATUS_RELE do primeiro pacote depois de conectar
+    rele_confirmado = Signal(int)       # STATUS_RELE pedido, confirmado pela placa
+    rele_nao_confirmado = Signal(int, str)  # STATUS_RELE pedido e motivo
 
     def __init__(self, abrir_porta=abrir_porta_serial, listar_portas=ConfiguracaoSerial.listar_portas):
         # Sem pai: o moveToThread não aceita um objeto que tem pai.
@@ -146,6 +156,9 @@ class SerialWorker(QObject):
         self._ultimo_descarte = ""
         self._proximo_aviso_descarte = 0.0
 
+        self._rastreador = RastreadorRele(self.PRAZO_RELE_S)
+        self._status_pedido = None  # STATUS_RELE do !0/!1 que aguarda confirmação
+
         self._portas = None
         self._proxima_listagem = 0.0
 
@@ -161,6 +174,13 @@ class SerialWorker(QObject):
         """Pede a desconexão. Também interrompe um handshake em andamento."""
         self._cancelar.set()
         self._fila.put((self._DESCONECTAR,))
+
+    def pedir_rele(self, status_rele):
+        """Pede o !1 (status 1, relé ligado) ou o !0 (status 0, relé desligado).
+
+        A resposta vem por rele_confirmado ou rele_nao_confirmado.
+        """
+        self._fila.put((self._RELE, status_rele))
 
     def parar(self):
         """Encerramento cooperativo: o laço termina na próxima volta."""
@@ -230,7 +250,9 @@ class SerialWorker(QObject):
         elif tipo == self._DESCONECTAR:
             self._cancelar.clear()
             if self.estado != DESCONECTADO:
-                self._desconectar("pelo operador")
+                self._desconectar("encerrada pelo operador")
+        elif tipo == self._RELE:
+            self._comandar_rele(comando[1])
 
     def _interrompido(self) -> bool:
         return self._parar.is_set() or self._cancelar.is_set()
@@ -265,7 +287,7 @@ class SerialWorker(QObject):
             self._fechar_porta()
             logger.info("Conexão com a placa em %s cancelada durante o handshake.", porta)
             self._mudar_estado(DESCONECTADO)
-            self.desconectado.emit("cancelada durante o handshake")
+            self.desconectado.emit("cancelada pelo operador durante o handshake")
         except (FalhaConexaoError, serial.SerialException, OSError) as erro:
             self._fechar_porta()
             logger.error("Falha ao conectar na placa em %s: %s.", porta, erro)
@@ -414,6 +436,9 @@ class SerialWorker(QObject):
         self._media_corrente.limpar()
         self._descartados = 0
         self._proximo_aviso_descarte = agora + self.INTERVALO_AVISO_DESCARTE_S
+        self._rastreador.prazo_s = self.PRAZO_RELE_S
+        self._rastreador.reiniciar()
+        self._status_pedido = None
 
     def _tratar_linha(self, texto, agora):
         try:
@@ -425,6 +450,9 @@ class SerialWorker(QObject):
 
         if linha.tipo == LinhaSerial.DADOS:
             self._receber_dados(linha.valor, agora)
+        elif linha.tipo in (LinhaSerial.ACK_RELE_LIGADO, LinhaSerial.ACK_RELE_DESLIGADO, LinhaSerial.ACK_RELE_ALTERNADO):
+            logger.info("Placa em %s respondeu: '%s'.", self._nome_porta, linha.texto)
+            self._rastreador.ack_recebido(linha.tipo)
         elif linha.tipo in (LinhaSerial.BANNER, LinhaSerial.ACK_PAUSA):
             # A placa voltou sozinha ao modo de espera (botão de reset, queda de alimentação).
             self._perder_conexao(f"a placa voltou ao modo de espera ('{linha.texto}')")
@@ -441,6 +469,63 @@ class SerialWorker(QObject):
         # ACS712 faria o mostrador e o alarme tremerem.
         leitura.corrente_a = self._media_corrente.adicionar(leitura.corrente_a)
         self._lote.append(leitura)
+        self._acompanhar_rele(leitura.status_rele, agora)
+
+    # ------------------------------------------------------------------
+    # Relé: !0/!1 confirmados por ACK e STATUS_RELE
+    # ------------------------------------------------------------------
+
+    def _comandar_rele(self, status_rele):
+        """Envia o !1 ou o !0. A confirmação vem depois, pela telemetria (RastreadorRele).
+
+        O ACK sozinho não basta: o comando só é confirmado quando o STATUS_RELE dos
+        pacotes, que o firmware lê do próprio pino de saída, chega no valor pedido.
+        """
+        if status_rele not in (0, 1):
+            self.rele_nao_confirmado.emit(status_rele, "STATUS_RELE pedido diferente de 0 e 1")
+            return
+        if self.estado != CONECTADO:
+            self.rele_nao_confirmado.emit(status_rele, "a placa não está conectada")
+            return
+        if self._rastreador.tem_comando_pendente:
+            self.rele_nao_confirmado.emit(status_rele, "a placa ainda não confirmou o comando anterior")
+            return
+
+        comando = COMANDO_RELE_LIGA if status_rele == 1 else COMANDO_RELE_DESLIGA
+        # Guardado antes de escrever: se a escrita falhar (cabo puxado), a perda da
+        # conexão recusa este pedido.
+        self._status_pedido = status_rele
+        self._escrever(comando)
+        self._rastreador.comando_enviado(comando, time.monotonic())
+        logger.info("Comando %s enviado à placa; aguardando o ACK e o STATUS_RELE.", comando.strip())
+
+    def _acompanhar_rele(self, status_rele, agora):
+        resultado = self._rastreador.atualizar(status_rele, agora)
+        if resultado == RastreadorRele.INICIAL:
+            logger.info("Relé da placa ao conectar: STATUS_RELE = %d.", status_rele)
+            self.rele_inicial.emit(status_rele)
+        elif resultado == RastreadorRele.CONFIRMADO:
+            self._status_pedido = None
+            logger.info("Placa confirmou o relé: ACK recebido e STATUS_RELE = %d.", status_rele)
+            self.rele_confirmado.emit(status_rele)
+        elif resultado == RastreadorRele.EXPIRADO:
+            pedido, self._status_pedido = self._status_pedido, None
+            motivo = (
+                f"sem ACK e STATUS_RELE = {pedido} em {self.PRAZO_RELE_S:.0f} s "
+                f"(STATUS_RELE ficou em {status_rele})"
+            )
+            logger.warning("A placa não confirmou o comando do relé: %s.", motivo)
+            self.rele_nao_confirmado.emit(pedido, motivo)
+        elif resultado == RastreadorRele.ESPONTANEO:
+            logger.warning("STATUS_RELE mudou para %d sem comando do operador.", status_rele)
+
+    def _recusar_pendente(self, motivo):
+        """Avisa que o !0/!1 que aguardava confirmação não vai mais ser confirmado."""
+        if self._status_pedido is None:
+            return
+        pedido, self._status_pedido = self._status_pedido, None
+        logger.warning("Comando do relé sem confirmação: %s.", motivo)
+        self.rele_nao_confirmado.emit(pedido, motivo)
 
     def _emitir_lote(self):
         """Entrega à interface (e, por ela, ao banco) as leituras juntadas desde o último lote."""
@@ -471,6 +556,7 @@ class SerialWorker(QObject):
         logger.warning("Conexão com a placa em %s perdida: %s.", self._nome_porta, motivo)
         self._emitir_lote()
         self._fechar_porta()
+        self._recusar_pendente("a conexão com a placa caiu antes da confirmação")
         self._mudar_estado(DESCONECTADO)
         self.conexao_perdida.emit(motivo)
 
@@ -484,12 +570,13 @@ class SerialWorker(QObject):
         if dados:
             self._pendentes.extend(self._leitor.adicionar(dados))
 
-    def _esperar_linha(self, aceitar, prazo_s):
+    def _esperar_linha(self, aceitar, prazo_s, interrompivel=True):
         """Lê até chegar uma linha que aceitar(linha) aprove e devolve essa LinhaSerial.
 
         As outras linhas são descartadas, inclusive $DAT com checksum errado. Devolve
-        None se o prazo acabar e lança ConexaoInterrompidaError se o operador desconectar
-        ou a aplicação fechar durante a espera.
+        None se o prazo acabar. Se interrompivel, lança ConexaoInterrompidaError quando o
+        operador desconecta ou a aplicação fecha durante a espera; a espera do ACK do !P
+        não é interrompível, porque ela já faz parte da desconexão.
         """
         limite = time.monotonic() + prazo_s
         while True:
@@ -501,7 +588,7 @@ class SerialWorker(QObject):
                     continue
                 if aceitar(linha):
                     return linha
-            if self._interrompido():
+            if interrompivel and self._interrompido():
                 raise ConexaoInterrompidaError()
             if time.monotonic() >= limite:
                 return None
@@ -515,12 +602,33 @@ class SerialWorker(QObject):
     # ------------------------------------------------------------------
 
     def _desconectar(self, motivo):
+        """Pausa a placa (!P), que volta a 9600 e fica em espera, e fecha a porta."""
         self._mudar_estado(DESCONECTANDO, self._nome_porta)
         self._emitir_lote()
+        self._recusar_pendente("a conexão foi encerrada antes da confirmação")
+        if self._porta is not None:
+            self._pausar_placa()
         self._fechar_porta()
-        logger.info("Conexão com a placa em %s encerrada %s.", self._nome_porta, motivo)
+        logger.info("Conexão com a placa em %s %s.", self._nome_porta, motivo)
         self._mudar_estado(DESCONECTADO)
         self.desconectado.emit(motivo)
+
+    def _pausar_placa(self):
+        """Envia o !P e espera o ACK. Uma falha aqui só vai para o log: a porta fecha de qualquer jeito."""
+        try:
+            self._escrever(COMANDO_PAUSA)
+            ack = self._esperar_linha(
+                lambda linha: linha.tipo == LinhaSerial.ACK_PAUSA, self._timeout_resposta_s, interrompivel=False
+            )
+        except (serial.SerialException, OSError) as erro:
+            logger.warning("Não foi possível pausar a placa em %s: %s.", self._nome_porta, erro)
+            return
+        if ack is None:
+            logger.warning(
+                "A placa em %s não confirmou o !P em %.0f ms.", self._nome_porta, self._timeout_resposta_s * 1000
+            )
+        else:
+            logger.info("Placa pausada: '%s'.", ack.texto)
 
     def _fechar_porta(self):
         if self._porta is None:

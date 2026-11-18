@@ -1,7 +1,7 @@
 import logging
 from collections import deque
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 import pyqtgraph as pg
 
@@ -10,10 +10,11 @@ from controllers.comandos_controller import ComandosController
 from controllers.corte_controller import CorteController
 from controllers.eventos_controller import EventosController
 from controllers.limites_controller import LimitesController
+from controllers.painel_serial_controller import PainelSerialController
+from controllers.serial_controller import SerialController
 from models.disjuntor import Disjuntor
 from models.dispositivo import Dispositivo
 from models.dispositivo_repository import DispositivoRepository
-from models.medicao import Medicao
 from models.simulador_telemetria import SimuladorTelemetria
 from ui.main_window import Ui_JanelaPrincipal
 
@@ -43,32 +44,33 @@ class MainWindowController:
         self.banco.iniciar()
         QApplication.instance().aboutToQuit.connect(self.banco.encerrar)
 
+        # Thread serial: começa parada (DESCONECTADO) e conecta quando o operador pede.
+        self.serial = SerialController(self.janela)
+        self.serial.iniciar()
+        QApplication.instance().aboutToQuit.connect(self.serial.encerrar)
+        self.ultima_leitura = None
+
         self.simulador = SimuladorTelemetria()
         self.disjuntor = self._carregar_disjuntor()
         self.medicoes = self._pre_carregar_medicoes()
 
         self.historico = EventosController(self.janela, self.ui.tabela_historico, self.banco)
         self.comandos = ComandosController(self.janela, self.ui, self.disjuntor, self.historico)
+        self.painel_serial = PainelSerialController(self.janela, self.ui, self.serial, self.historico)
         self.corte = CorteController(
             self.janela, self.ui, self.disjuntor, self.historico, self.banco, self._potencia_atual
         )
-        # Placa simulada até o SerialWorker (Bloco 3) existir: o comando é confirmado na
-        # hora. A conexão enfileirada imita a resposta assíncrona da placa de verdade.
-        self.corte.comando_rele_solicitado.connect(self.corte.confirmar_rele, Qt.QueuedConnection)
         self.corte.estado_disjuntor_alterado.connect(self._atualizar_disjuntor)
         self.corte.estado_disjuntor_alterado.connect(self.comandos.reavaliar_protecao)
         self.limites = LimitesController(self.janela, self.ui, self.historico)
+        self._ligar_serial()
 
         self._configurar_grafico()
         self._redesenhar_grafico()
-        self._atualizar_indicadores(self.medicoes[-1])
+        # Os mostradores ficam em branco até a placa mandar a primeira leitura.
+        self._limpar_indicadores()
         self._atualizar_disjuntor()
-        self.comandos.avaliar_protecao(self.medicoes[-1])
-        self.limites.avaliar(self.medicoes[-1])
-
-        self.timer = QTimer(self.janela)
-        self.timer.timeout.connect(self._simular_nova_medicao)
-        self.timer.start(self.INTERVALO_SIMULACAO_MS)
+        self.comandos.reavaliar_protecao()
 
     def _ajustar_layout(self):
         """Abre a janela maximizada e entrega ao gráfico a maior parte da altura livre."""
@@ -107,6 +109,37 @@ class MainWindowController:
                        ui.label_alerta_status, ui.label_serial_status):
             widget.setMinimumHeight(self.ALTURA_BOTOES)
         ui.btn_corte_emergencia.setMinimumHeight(self.ALTURA_BOTAO_CORTE)
+
+    def _ligar_serial(self):
+        """Liga a thread serial ao dashboard.
+
+        Cada lote de leituras vai para o banco (média por janela, no DatabaseWorker) e
+        atualiza os mostradores, a proteção por setpoint e os limites de segurança. O
+        !0/!1 do corte e do religamento vai para a placa, e o CorteController só grava a
+        operação quando ela confirma (ACK e STATUS_RELE no valor pedido).
+        """
+        self.serial.leituras_recebidas.connect(self._ao_receber_leituras)
+        self.serial.desconectado.connect(self._limpar_indicadores)
+        self.serial.conexao_perdida.connect(self._limpar_indicadores)
+
+        self.corte.comando_rele_solicitado.connect(self.serial.enviar_comando_rele)
+        self.serial.rele_confirmado.connect(self.corte.confirmar_rele)
+        self.serial.rele_nao_confirmado.connect(self.corte.recusar_rele)
+
+    def _ao_receber_leituras(self, lote):
+        """Lote de LeituraTelemetria da thread serial (uns 20 por vez, 10 vezes por segundo)."""
+        self.banco.gravar_leituras(lote)
+        leitura = lote[-1]
+        self.ultima_leitura = leitura
+        self._atualizar_indicadores(leitura)
+        self.comandos.avaliar_protecao(leitura)
+        self.limites.avaliar(leitura)
+
+    def _limpar_indicadores(self, *_motivo):
+        """Sem placa, os mostradores ficam em branco, em vez de congelar no último valor."""
+        self.ultima_leitura = None
+        for lcd in (self.ui.lcd_tensao, self.ui.lcd_corrente, self.ui.lcd_potencia):
+            lcd.display("--")
 
     def _avisar_falha_banco(self, mensagem):
         """Aviso do DatabaseWorker (banco ocupado ou que não abriu). O detalhe já está no
@@ -157,8 +190,10 @@ class MainWindowController:
         self.curva_potencia.setData(self.eixo_x, potencias)
 
     def _potencia_atual(self) -> float:
-        """Potência da medição mais recente, gravada no evento do corte de emergência."""
-        return self.medicoes[-1].calcular_potencia()
+        """Potência da leitura mais recente da placa, gravada no evento do corte de emergência."""
+        if self.ultima_leitura is None:
+            return 0.0
+        return self.ultima_leitura.calcular_potencia()
 
     def _atualizar_indicadores(self, medicao):
         dados = medicao.get_dados()
@@ -174,16 +209,3 @@ class MainWindowController:
             f"background-color: {dados['cor']}; color: white; "
             "border-radius: 6px; padding: 6px; font-weight: bold;"
         )
-
-    def _simular_nova_medicao(self):
-        medicao = self.simulador.proxima_medicao()
-        if not self.comandos.carga_esta_ativa():
-            medicao = Medicao(medicao.tensao_v, 0.0, medicao.timestamp)
-
-        self.medicoes.append(medicao)
-
-        self._redesenhar_grafico()
-        self._atualizar_indicadores(medicao)
-        self._atualizar_disjuntor()
-        self.comandos.avaliar_protecao(medicao)
-        self.limites.avaliar(medicao)
