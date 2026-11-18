@@ -49,6 +49,7 @@ Essa adaptação **não faz parte das entregas A1/1 e A1/2** e será tratada jun
 - PySide6 (Qt for Python)
 - Qt Designer
 - PyQtGraph (gráfico de tendência)
+- pyserial (comunicação com a placa)
 - SQLite (módulo sqlite3 da biblioteca padrão do Python)
 - JSON e logging (módulos json e logging da biblioteca padrão do Python)
 
@@ -87,13 +88,18 @@ O arquivo `data/config.json` guarda os parâmetros de inicialização e comunica
 | Chave | Uso | Padrão |
 |---|---|---|
 | `porta_com` | porta selecionada no painel serial | `COM1` |
-| `baud_rate` | baud rate selecionado no painel serial | `9600` |
-| `corrente_max` | limite inicial de corrente máxima (A) | `25.0` |
-| `tensao_desarme` | limite inicial de tensão de desarme (V) | `242.0` |
+| `baud_rate` | taxa pedida à placa no handshake (`!S<taxa>`): 9600, 19200, 38400 ou 115200 | `115200` |
+| `corrente_max` | limite inicial de corrente máxima (A), até 30 A | `25.0` |
+| `tensao_desarme` | limite inicial de tensão de desarme (V), até 12 V | `11.5` |
+| `fator_tensao` | volts por contagem do ADC em A0 (12 V = 1023) | `12/1023` |
+| `sensibilidade_corrente` | sensibilidade do ACS712-30A em A1 (V/A) | `0.066` |
+| `zero_corrente_adc` | contagem do ADC que corresponde a 0 A | `512.0` |
+| `taxa_amostragem_ms` | janela da média gravada na tabela `leituras` (ms) | `500` |
 
-- Se o arquivo não existir (`os.path.exists`), ele é criado com os valores padrão. Se estiver corrompido, os padrões são restaurados e o erro vai para o log.
+- Se o arquivo não existir (`os.path.exists`), ele é criado com os valores padrão. Se estiver corrompido, os padrões são restaurados e o erro vai para o log. Chaves que faltarem são acrescentadas com o valor padrão.
+- **Valores seguros**: a bancada trabalha com 0 a 12 V e ±30 A. Um limite fora dessa faixa (por exemplo os 242 V da versão anterior), uma taxa que a placa não aceita ou um valor de tipo errado é trocado pelo padrão, com WARNING no log, e o arquivo é regravado já corrigido.
 - A porta COM e o baud rate são salvos assim que o operador os altera no painel serial.
-- Os limites iniciais valem enquanto a tabela `limites` está vazia (primeiro uso ou clone limpo) ou se o banco não puder ser lido. Um valor inválido no arquivo (texto, zero ou negativo) é trocado pelo padrão, com WARNING no log.
+- Os limites iniciais valem enquanto a tabela `limites` está vazia (primeiro uso ou clone limpo) ou se o banco não puder ser lido.
 
 ## Log de auditoria (smartgrid.log)
 

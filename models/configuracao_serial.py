@@ -1,19 +1,37 @@
+from serial.tools import list_ports
+
+from models.protocolo import TAXA_PADRAO, TAXAS_SUPORTADAS
+
+
 class ConfiguracaoSerial:
-    PORTAS_SIMULADAS = ["COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8"]
-    BAUD_RATES = [9600, 115200]
+    """Conexão com a placa escolhida no painel serial: porta, taxa e timeout.
+
+    A porta sempre abre em 9600 bps, a taxa em que a placa liga. A taxa escolhida no
+    painel é a que o desktop pede no handshake (!S<taxa>), 115200 por padrão: das
+    quatro, é a única que dá conta dos 200 pacotes por segundo do firmware.
+    """
+
+    BAUD_RATES = list(TAXAS_SUPORTADAS)
+    BAUD_RATE_PADRAO = TAXA_PADRAO
 
     TIMEOUT_PADRAO = 1000
     TIMEOUT_MINIMO = 100
     TIMEOUT_MAXIMO = 10000
 
-    DESCONECTADO = "DESCONECTADO"
-    CONECTADO = "CONECTADO"
+    # Estados da máquina do SerialWorker, na ordem do handshake com a placa.
+    DESCONECTADO = "DESCONECTADO"    # porta fechada
+    CONECTANDO = "CONECTANDO"        # porta aberta em 9600, esperando o banner do reset do Uno
+    NEGOCIANDO = "NEGOCIANDO"        # !S<taxa> enviado, esperando o ACK ou o ERR (ainda em 9600)
+    CALIBRANDO = "CALIBRANDO"        # porta já na taxa nova, medindo o zero da corrente
+    CONECTADO = "CONECTADO"          # telemetria $DAT chegando
+    RECONECTANDO = "RECONECTANDO"    # conexão perdida (cabo puxado ou silêncio), tentando de novo
+    DESCONECTANDO = "DESCONECTANDO"  # !P enviado, fechando a porta
 
-    def __init__(self, porta=None, baud_rate=None, timeout_ms=None):
-        if porta is None:
-            porta = ConfiguracaoSerial.PORTAS_SIMULADAS[0]
+    ESTADOS = (DESCONECTADO, CONECTANDO, NEGOCIANDO, CALIBRANDO, CONECTADO, RECONECTANDO, DESCONECTANDO)
+
+    def __init__(self, porta="", baud_rate=None, timeout_ms=None):
         if baud_rate is None:
-            baud_rate = ConfiguracaoSerial.BAUD_RATES[0]
+            baud_rate = ConfiguracaoSerial.BAUD_RATE_PADRAO
         if timeout_ms is None:
             timeout_ms = ConfiguracaoSerial.TIMEOUT_PADRAO
 
@@ -24,17 +42,10 @@ class ConfiguracaoSerial:
 
     @staticmethod
     def listar_portas() -> list:
-        """Portas disponíveis. Nesta etapa a conexão é apenas visual, então o
-        sistema opera com portas simuladas quando o pyserial não está instalado."""
-        try:
-            from serial.tools import list_ports
-        except ImportError:
-            return list(ConfiguracaoSerial.PORTAS_SIMULADAS)
-
+        """Portas seriais presentes no computador, pelo pyserial (ex.: ['COM3', 'COM5'])."""
         portas = [porta.device for porta in list_ports.comports()]
-        if not portas:
-            return list(ConfiguracaoSerial.PORTAS_SIMULADAS)
-        return portas
+        # COM10 depois de COM9, e não entre COM1 e COM2.
+        return sorted(portas, key=lambda nome: (len(nome), nome))
 
     def esta_conectado(self) -> bool:
         return self.estado == ConfiguracaoSerial.CONECTADO
@@ -51,7 +62,7 @@ class ConfiguracaoSerial:
         return True
 
     def conectar(self) -> bool:
-        """Conexão simulada: nesta etapa só muda o status visual do painel."""
+        """Conexão simulada: até a thread serial existir, só muda o status visual do painel."""
         if not self.validar():
             return False
         self.estado = ConfiguracaoSerial.CONECTADO
