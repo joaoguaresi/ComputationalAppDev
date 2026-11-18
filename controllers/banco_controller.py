@@ -26,11 +26,14 @@ class BancoController(QObject):
     evento_solicitado = Signal(object)
     rele_espontaneo_solicitado = Signal(int, object)
     botao_local_solicitado = Signal(object)
+    operacao_rele_solicitada = Signal(str, list, bool)
     encerramento_solicitado = Signal()
 
     # Repassam as respostas do worker, já na thread da interface.
     evento_gravado = Signal(object)
     evento_nao_gravado = Signal(object, str)
+    operacao_rele_gravada = Signal(str, list)
+    operacao_rele_falhou = Signal(str, str, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -47,12 +50,15 @@ class BancoController(QObject):
         self.evento_solicitado.connect(self.worker.registrar_evento)
         self.rele_espontaneo_solicitado.connect(self.worker.registrar_rele_espontaneo)
         self.botao_local_solicitado.connect(self.worker.registrar_botao_local)
+        self.operacao_rele_solicitada.connect(self.worker.gravar_operacao_rele)
         self.encerramento_solicitado.connect(self.worker.encerrar)
 
         # Sinal ligado a sinal: o worker emite na thread do banco e o Qt reemite estes na
         # thread da interface, onde ficam os controllers que atualizam a tela.
         self.worker.evento_gravado.connect(self.evento_gravado)
         self.worker.evento_nao_gravado.connect(self.evento_nao_gravado)
+        self.worker.operacao_rele_gravada.connect(self.operacao_rele_gravada)
+        self.worker.operacao_rele_falhou.connect(self.operacao_rele_falhou)
         # O worker vive na thread do banco: o deleteLater dele é atendido quando ela termina.
         self.thread_banco.finished.connect(self.worker.deleteLater)
 
@@ -81,6 +87,11 @@ class BancoController(QObject):
     def registrar_botao_local(self, momento=None):
         """Aperto confirmado do botão da bancada (DetectorBotao)."""
         self.botao_local_solicitado.emit(momento or datetime.now())
+
+    def gravar_operacao_rele(self, status, eventos, simular_falha=False):
+        """Pede a gravação do corte (ABERTO) ou do religamento (FECHADO), já confirmado
+        pela placa. A resposta vem por operacao_rele_gravada ou operacao_rele_falhou."""
+        self.operacao_rele_solicitada.emit(status, list(eventos), simular_falha)
 
     def encerrar(self):
         """Encerramento cooperativo: pede ao worker que pare e espera a thread terminar.

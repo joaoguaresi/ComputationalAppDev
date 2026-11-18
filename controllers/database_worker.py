@@ -6,11 +6,18 @@ from PySide6.QtCore import QObject, Signal, Slot
 
 from database.connection import Database
 from models.agregador_leituras import AgregadorLeituras
+from models.dispositivo import Dispositivo
+from models.dispositivo_repository import DispositivoRepository
 from models.evento_historico import EventoHistorico
 from models.evento_repository import EventoRepository
 from models.leitura_repository import LeituraRepository
 
 logger = logging.getLogger("smartgrid")
+
+
+class FalhaOperacaoError(RuntimeError):
+    """Interrompe a gravação do corte ou do religamento no meio da transação. Como é
+    lançada dentro do with conn:, o SQLite desfaz tudo o que já tinha sido feito (ROLLBACK)."""
 
 
 class DatabaseWorker(QObject):
@@ -26,11 +33,19 @@ class DatabaseWorker(QObject):
     deixa usar uma conexão em outra thread.
     """
 
+    # O relé recebe o comando e o disjuntor sinaliza a proteção: os dois mudam juntos.
+    TAGS_OPERACAO_RELE = (Dispositivo.TAG_RELE_EMERGENCIA, Dispositivo.TAG_DISJUNTOR_PRINCIPAL)
+
     falhou = Signal(str)
 
     # Respostas dos pedidos de evento, entregues na thread da interface pela fila dela.
     evento_gravado = Signal(object)
     evento_nao_gravado = Signal(object, str)
+
+    # Respostas da gravação do corte ou do religamento: status gravado e eventos, ou
+    # status pedido, motivo da falha e status do disjuntor relido depois do ROLLBACK.
+    operacao_rele_gravada = Signal(str, list)
+    operacao_rele_falhou = Signal(str, str, str)
 
     def __init__(self):
         # Sem pai: o moveToThread não aceita um objeto que tem pai.
@@ -88,6 +103,52 @@ class DatabaseWorker(QObject):
             return
 
         self.evento_gravado.emit(evento)
+
+    @Slot(str, list, bool)
+    def gravar_operacao_rele(self, status, eventos, simular_falha):
+        """Grava o corte (ABERTO) ou o religamento (FECHADO) numa única transação: o status
+        do relé e do disjuntor e os eventos do histórico.
+
+        Só é pedida depois que a placa confirmou o comando. O with conn: faz o COMMIT só
+        se o bloco inteiro terminar sem erro; qualquer exceção no meio, inclusive a falha
+        simulada, faz o SQLite desfazer tudo (ROLLBACK): o status nunca muda sem o
+        evento, nem o evento fica gravado sem o status.
+        """
+        if self._conn is None:
+            self.operacao_rele_falhou.emit(status, "a conexão com o banco não está aberta", "não foi possível consultar")
+            return
+
+        try:
+            with self._conn:
+                for tag in self.TAGS_OPERACAO_RELE:
+                    if not DispositivoRepository.atualizar_status(tag, status, conn=self._conn):
+                        raise FalhaOperacaoError(f"dispositivo {tag} não está cadastrado no banco")
+
+                if simular_falha:
+                    raise FalhaOperacaoError(
+                        "falha simulada entre a atualização do disjuntor e o registro do evento"
+                    )
+
+                for evento in eventos:
+                    EventoRepository.inserir(evento, conn=self._conn)
+        except (FalhaOperacaoError, sqlite3.Error) as erro:
+            self.operacao_rele_falhou.emit(status, str(erro), self._status_disjuntor_no_banco())
+            return
+
+        self.operacao_rele_gravada.emit(status, eventos)
+
+    @staticmethod
+    def _status_disjuntor_no_banco() -> str:
+        """Relê o status do disjuntor depois do ROLLBACK, para comprovar que ficou o anterior."""
+        try:
+            dispositivo = DispositivoRepository.buscar_por_tag(Dispositivo.TAG_DISJUNTOR_PRINCIPAL)
+        except sqlite3.Error as erro:
+            logger.error("Não foi possível reler o estado do disjuntor após o rollback: %s", erro)
+            return "não foi possível consultar"
+
+        if dispositivo is None:
+            return "não cadastrado"
+        return dispositivo.status
 
     @Slot(int, object)
     def registrar_rele_espontaneo(self, status_rele, momento):

@@ -47,7 +47,12 @@ class MainWindowController:
 
         self.historico = EventosController(self.janela, self.ui.tabela_historico, self.banco)
         self.comandos = ComandosController(self.janela, self.ui, self.disjuntor, self.historico)
-        self.corte = CorteController(self.janela, self.ui, self.disjuntor, self.historico, self._potencia_atual)
+        self.corte = CorteController(
+            self.janela, self.ui, self.disjuntor, self.historico, self.banco, self._potencia_atual
+        )
+        # Placa simulada até o SerialWorker (Bloco 3) existir: o comando é confirmado na
+        # hora. A conexão enfileirada imita a resposta assíncrona da placa de verdade.
+        self.corte.comando_rele_solicitado.connect(self.corte.confirmar_rele, Qt.QueuedConnection)
         self.corte.estado_disjuntor_alterado.connect(self._atualizar_disjuntor)
         self.corte.estado_disjuntor_alterado.connect(self.comandos.reavaliar_protecao)
         self.limites = LimitesController(self.janela, self.ui, self.historico)

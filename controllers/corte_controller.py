@@ -1,51 +1,57 @@
 import logging
-import sqlite3
-from contextlib import closing
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QMessageBox
 
-from database.connection import Database
 from models.dispositivo import Dispositivo
-from models.dispositivo_repository import DispositivoRepository
 from models.evento_historico import EventoHistorico
-from models.evento_repository import EventoRepository
 
 logger = logging.getLogger("smartgrid")
-
-
-class FalhaOperacaoError(RuntimeError):
-    """Interrompe o corte ou o religamento no meio da transação. Como é lançada dentro
-    do with conn:, o SQLite desfaz tudo o que já tinha sido feito (ROLLBACK)."""
 
 
 class CorteController(QObject):
     """Corte de emergência (RELAY_OFF) e religamento do disjuntor.
 
-    Cada operação grava o novo status do relé de emergência e do disjuntor e os eventos
-    do histórico numa única transação: ou tudo é gravado, ou nada é. O comando RELAY_OFF
-    continua simulado nesta etapa, sem comunicação real com o microcontrolador.
+    A operação segue a ordem do hardware:
+
+    1. o operador confirma no QMessageBox e o controller pede o comando à placa pelo
+       sinal comando_rele_solicitado (0 = desligar o relé, 1 = ligar);
+    2. a placa confirma (ACK e STATUS_RELE no valor pedido) e chama confirmar_rele();
+       se ela não confirmar no prazo, recusar_rele() avisa o operador e nada é gravado;
+    3. só então o DatabaseWorker grava, numa única transação, o status do relé e do
+       disjuntor e os eventos do histórico;
+    4. só depois do COMMIT a tela muda.
+
+    Enquanto o SerialWorker (Bloco 3) não existe, o MainWindowController liga o pedido
+    direto ao confirmar_rele(): a placa é simulada e confirma o comando na hora.
 
     Para demonstrar o ROLLBACK, o atalho Ctrl+Shift+F liga uma falha simulada que
-    interrompe o corte entre a atualização do disjuntor e o registro do evento.
+    interrompe a gravação do corte entre a atualização do disjuntor e o registro do evento.
     """
 
     COMANDO_RELAY_OFF = "RELAY_OFF"
     ATALHO_FALHA_SIMULADA = "Ctrl+Shift+F"
 
-    # O relé recebe o RELAY_OFF e o disjuntor sinaliza a proteção: os dois mudam juntos.
-    TAGS_DISPOSITIVOS = (Dispositivo.TAG_RELE_EMERGENCIA, Dispositivo.TAG_DISJUNTOR_PRINCIPAL)
+    # STATUS_RELE do firmware: 0 = relé desligado (carga cortada), 1 = relé ligado.
+    RELE_DESLIGADO = 0
+    RELE_LIGADO = 1
 
     estado_disjuntor_alterado = Signal()
+    comando_rele_solicitado = Signal(int)
 
-    def __init__(self, janela, ui, disjuntor, historico, obter_potencia_atual):
+    def __init__(self, janela, ui, disjuntor, historico, banco, obter_potencia_atual):
         super().__init__(janela)
         self.janela = janela
         self.ui = ui
         self.disjuntor = disjuntor
         self.historico = historico
+        self.banco = banco
         self.obter_potencia_atual = obter_potencia_atual
+
+        # Comando pedido à placa e ainda não gravado (None quando não há nenhum).
+        self._status_pendente = None
+        self._potencia_no_pedido = None
 
         self.falha_simulada_ativa = False
         self.titulo_janela = janela.windowTitle()
@@ -54,10 +60,12 @@ class CorteController(QObject):
 
         self.ui.btn_corte_emergencia.clicked.connect(self._ao_solicitar_corte)
         self.ui.btn_religar_disjuntor.clicked.connect(self._ao_solicitar_religamento)
+        self.banco.operacao_rele_gravada.connect(self._ao_gravar_operacao)
+        self.banco.operacao_rele_falhou.connect(self._ao_falhar_operacao)
         self._atualizar_botoes()
 
     # ------------------------------------------------------------------
-    # Corte de emergência e religamento
+    # Pedido do comando à placa
     # ------------------------------------------------------------------
 
     def _ao_solicitar_corte(self):
@@ -69,46 +77,13 @@ class CorteController(QObject):
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
-        if resposta != QMessageBox.Yes:
-            return
+        if resposta == QMessageBox.Yes:
+            self.solicitar_corte()
 
-        potencia = self.obter_potencia_atual()
-        eventos = [
-            EventoHistorico(
-                EventoHistorico.CORTE_EMERGENCIA,
-                f"Comando {self.COMANDO_RELAY_OFF} enviado pelo operador",
-                potencia,
-                "W",
-                dispositivo_tag=Dispositivo.TAG_RELE_EMERGENCIA,
-            ),
-            EventoHistorico(
-                EventoHistorico.MUDANCA_DISJUNTOR,
-                "Disjuntor aberto - proteção ativada",
-                dispositivo_tag=Dispositivo.TAG_DISJUNTOR_PRINCIPAL,
-            ),
-        ]
-
-        try:
-            self._gravar_operacao(Dispositivo.ABERTO, eventos, self.falha_simulada_ativa)
-        except (FalhaOperacaoError, sqlite3.Error) as erro:
-            self._informar_falha("corte emergencial", erro)
-            return
-
-        # Só depois do COMMIT a tela muda: o dashboard nunca mostra um corte que não foi gravado.
-        self.disjuntor.abrir()
-        self._concluir_operacao(eventos)
-        logger.warning(
-            "Corte de emergência executado: comando %s enviado com %.2f W de carga. "
-            "Relé de emergência e disjuntor abertos.",
-            self.COMANDO_RELAY_OFF, potencia,
-        )
-
-        QMessageBox.information(
-            self.janela,
-            "Corte de emergência",
-            f"Comando {self.COMANDO_RELAY_OFF} enviado (simulado).\n"
-            "Disjuntor aberto e carga desligada. Ocorrência gravada no histórico.",
-        )
+    def solicitar_corte(self):
+        """Pede o RELAY_OFF à placa. Separado da confirmação na tela para servir também
+        ao disparo local pelo botão da bancada, que não pergunta nada."""
+        self._pedir_comando(self.RELE_DESLIGADO)
 
     def _ao_solicitar_religamento(self):
         resposta = QMessageBox.question(
@@ -118,7 +93,48 @@ class CorteController(QObject):
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
-        if resposta != QMessageBox.Yes:
+        if resposta == QMessageBox.Yes:
+            self._pedir_comando(self.RELE_LIGADO)
+
+    def _pedir_comando(self, status_rele):
+        if self._status_pendente is not None:
+            logger.warning("Comando do relé ignorado: a placa ainda não confirmou o comando anterior.")
+            return
+
+        self._status_pendente = status_rele
+        self._potencia_no_pedido = self.obter_potencia_atual()
+        self._atualizar_botoes()
+        self.janela.statusBar().showMessage("Comando enviado à placa. Aguardando confirmação...")
+        logger.info(
+            "Comando de %s o relé enviado à placa; aguardando confirmação.",
+            "desligar" if status_rele == self.RELE_DESLIGADO else "ligar",
+        )
+        self.comando_rele_solicitado.emit(status_rele)
+
+    def confirmar_rele(self, status_rele):
+        """A placa confirmou o comando (ACK e STATUS_RELE): só agora a operação vai para o banco."""
+        if status_rele != self._status_pendente:
+            logger.warning(
+                "Confirmação do relé ignorada: STATUS_RELE %d não corresponde ao comando pendente.", status_rele
+            )
+            return
+
+        if status_rele == self.RELE_DESLIGADO:
+            eventos = [
+                EventoHistorico(
+                    EventoHistorico.CORTE_EMERGENCIA,
+                    f"Comando {self.COMANDO_RELAY_OFF} enviado pelo operador e confirmado pela placa",
+                    self._potencia_no_pedido,
+                    "W",
+                    dispositivo_tag=Dispositivo.TAG_RELE_EMERGENCIA,
+                ),
+                EventoHistorico(
+                    EventoHistorico.MUDANCA_DISJUNTOR,
+                    "Disjuntor aberto - proteção ativada",
+                    dispositivo_tag=Dispositivo.TAG_DISJUNTOR_PRINCIPAL,
+                ),
+            ]
+            self.banco.gravar_operacao_rele(Dispositivo.ABERTO, eventos, self.falha_simulada_ativa)
             return
 
         evento = EventoHistorico(
@@ -126,79 +142,91 @@ class CorteController(QObject):
             "Disjuntor fechado - operação normal restabelecida",
             dispositivo_tag=Dispositivo.TAG_DISJUNTOR_PRINCIPAL,
         )
+        self.banco.gravar_operacao_rele(Dispositivo.FECHADO, [evento])
 
-        try:
-            self._gravar_operacao(Dispositivo.FECHADO, [evento])
-        except (FalhaOperacaoError, sqlite3.Error) as erro:
-            self._informar_falha("religamento do disjuntor", erro)
+    def recusar_rele(self, status_rele, motivo):
+        """A placa não confirmou o comando (RastreadorRele.EXPIRADO): nada é gravado."""
+        if status_rele != self._status_pendente:
+            return
+        self._status_pendente = None
+        self._atualizar_botoes()
+        self.janela.statusBar().clearMessage()
+
+        operacao = "corte emergencial" if status_rele == self.RELE_DESLIGADO else "religamento do disjuntor"
+        logger.warning("A placa não confirmou o comando de %s: %s. Nada foi gravado no banco.", operacao, motivo)
+        QMessageBox.warning(
+            self.janela,
+            "Comando não confirmado",
+            f"A placa não confirmou o comando de {operacao}.\n\n"
+            f"Motivo: {motivo}\n\n"
+            "Nenhuma alteração foi gravada no banco.",
+        )
+
+    # ------------------------------------------------------------------
+    # Respostas do DatabaseWorker
+    # ------------------------------------------------------------------
+
+    def _ao_gravar_operacao(self, status, eventos):
+        """Depois do COMMIT: atualiza o disjuntor, mostra os eventos e libera os botões."""
+        self._status_pendente = None
+        self.janela.statusBar().clearMessage()
+
+        if status == Dispositivo.ABERTO:
+            self.disjuntor.abrir()
+            self._concluir_operacao(eventos)
+            logger.warning(
+                "Corte de emergência executado: comando %s confirmado pela placa com %.2f W de carga. "
+                "Relé de emergência e disjuntor abertos.",
+                self.COMANDO_RELAY_OFF, self._potencia_no_pedido,
+            )
+            QMessageBox.information(
+                self.janela,
+                "Corte de emergência",
+                f"Comando {self.COMANDO_RELAY_OFF} confirmado pela placa.\n"
+                "Disjuntor aberto e carga desligada. Ocorrência gravada no histórico.",
+            )
             return
 
         self.disjuntor.fechar()
-        self._concluir_operacao([evento])
+        self._concluir_operacao(eventos)
         logger.info("Religamento executado: relé de emergência e disjuntor fechados pelo operador.")
 
-    @classmethod
-    def _gravar_operacao(cls, status, eventos, simular_falha=False):
-        """Grava o novo status do relé e do disjuntor e os eventos numa única transação.
+    def _ao_falhar_operacao(self, status, motivo, estado_no_banco):
+        self._status_pendente = None
+        self.janela.statusBar().clearMessage()
+        self._atualizar_botoes()
 
-        O with conn: faz o COMMIT só se o bloco inteiro terminar sem erro. Qualquer
-        exceção no meio, inclusive a falha simulada, faz o SQLite desfazer tudo
-        (ROLLBACK): o status nunca muda sem o evento, nem o evento fica gravado sem o status.
-        """
-        with closing(Database.get_connection()) as conn:
-            with conn:
-                for tag in cls.TAGS_DISPOSITIVOS:
-                    if not DispositivoRepository.atualizar_status(tag, status, conn=conn):
-                        raise FalhaOperacaoError(f"dispositivo {tag} não está cadastrado no banco")
-
-                if simular_falha:
-                    raise FalhaOperacaoError(
-                        "falha simulada entre a atualização do disjuntor e o registro do evento"
-                    )
-
-                for evento in eventos:
-                    EventoRepository.inserir(evento, conn=conn)
+        operacao = "corte emergencial" if status == Dispositivo.ABERTO else "religamento do disjuntor"
+        self._informar_falha(operacao, motivo, estado_no_banco)
 
     def _concluir_operacao(self, eventos):
-        """Depois do COMMIT: mostra os eventos gravados e atualiza o dashboard."""
+        """Mostra os eventos já gravados na transação e atualiza o dashboard."""
         for evento in eventos:
             self.historico.publicar(evento)
         self._atualizar_botoes()
         self.estado_disjuntor_alterado.emit()
 
-    def _informar_falha(self, operacao, erro):
+    def _informar_falha(self, operacao, motivo, estado_no_banco):
         """Registra a falha no log e avisa o operador, mostrando o estado do disjuntor
         relido do banco depois do ROLLBACK."""
-        logger.error("Falha na operação de %s. Rollback executado: %s.", operacao, erro)
-        estado = self._consultar_estado_no_banco()
+        logger.error("Falha na operação de %s. Rollback executado: %s.", operacao, motivo)
+        logger.info("Estado do disjuntor no banco após o rollback: %s.", estado_no_banco)
 
         QMessageBox.critical(
             self.janela,
             f"Falha no {operacao}",
             f"O {operacao} não foi concluído.\n\n"
-            f"Motivo: {erro}\n\n"
+            f"Motivo: {motivo}\n\n"
             "A transação foi desfeita (ROLLBACK) e nenhuma alteração foi gravada no banco.\n"
-            f"Estado do disjuntor no banco: {estado}",
+            f"Estado do disjuntor no banco: {estado_no_banco}",
         )
 
-    def _consultar_estado_no_banco(self) -> str:
-        """Relê o status do disjuntor para comprovar que o ROLLBACK manteve o estado anterior."""
-        try:
-            dispositivo = DispositivoRepository.buscar_por_tag(Dispositivo.TAG_DISJUNTOR_PRINCIPAL)
-        except sqlite3.Error as erro:
-            logger.error("Não foi possível reler o estado do disjuntor após o rollback: %s", erro)
-            return "não foi possível consultar"
-
-        if dispositivo is None:
-            return "não cadastrado"
-
-        logger.info("Estado do disjuntor no banco após o rollback: %s.", dispositivo.status)
-        return dispositivo.status
-
     def _atualizar_botoes(self):
+        """Com um comando aguardando a placa, os dois botões ficam bloqueados."""
+        livre = self._status_pendente is None
         fechado = self.disjuntor.esta_fechado()
-        self.ui.btn_corte_emergencia.setEnabled(fechado)
-        self.ui.btn_religar_disjuntor.setEnabled(not fechado)
+        self.ui.btn_corte_emergencia.setEnabled(livre and fechado)
+        self.ui.btn_religar_disjuntor.setEnabled(livre and not fechado)
 
     # ------------------------------------------------------------------
     # Falha simulada (demonstração do ROLLBACK)
