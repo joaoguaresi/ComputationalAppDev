@@ -28,6 +28,7 @@ class MainWindowController:
     ALTURA_INDICADORES = 44
     ALTURA_BOTOES = 26
     ALTURA_BOTAO_CORTE = 34
+    DURACAO_AVISO_BANCO_MS = 10000
 
     def __init__(self, janela):
         self.janela = janela
@@ -38,6 +39,7 @@ class MainWindowController:
         # Thread do banco: começa com o dashboard e é encerrada no aboutToQuit, que o Qt
         # emite antes de a aplicação fechar.
         self.banco = BancoController(self.janela)
+        self.banco.falha_banco.connect(self._avisar_falha_banco)
         self.banco.iniciar()
         QApplication.instance().aboutToQuit.connect(self.banco.encerrar)
 
@@ -105,6 +107,11 @@ class MainWindowController:
                        ui.label_alerta_status, ui.label_serial_status):
             widget.setMinimumHeight(self.ALTURA_BOTOES)
         ui.btn_corte_emergencia.setMinimumHeight(self.ALTURA_BOTAO_CORTE)
+
+    def _avisar_falha_banco(self, mensagem):
+        """Aviso do DatabaseWorker (banco ocupado ou que não abriu). O detalhe já está no
+        log; a barra de status não trava a tela, ao contrário de um QMessageBox."""
+        self.janela.statusBar().showMessage(mensagem, self.DURACAO_AVISO_BANCO_MS)
 
     @staticmethod
     def _carregar_disjuntor():

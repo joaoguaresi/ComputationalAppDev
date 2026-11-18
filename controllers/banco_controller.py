@@ -18,9 +18,10 @@ class BancoController(QObject):
     segue sem esperar a resposta.
     """
 
-    # Maior que o timeout de 5 s do SQLite: uma gravação que está esperando o banco
-    # liberar ainda consegue terminar antes de a interface desistir de esperar.
-    TEMPO_MAXIMO_ENCERRAMENTO_MS = 7000
+    # Com o banco ocupado, o encerramento pode esperar duas vezes o timeout de 5 s da
+    # conexão: uma nova tentativa que já estava em andamento e a última tentativa do
+    # encerrar(). Este tempo cobre as duas, com folga, antes de a interface desistir.
+    TEMPO_MAXIMO_ENCERRAMENTO_MS = 12000
 
     gravacao_solicitada = Signal(list)
     evento_solicitado = Signal(object)
@@ -31,6 +32,7 @@ class BancoController(QObject):
     encerramento_solicitado = Signal()
 
     # Repassam as respostas do worker, já na thread da interface.
+    falha_banco = Signal(str)
     evento_gravado = Signal(object)
     evento_nao_gravado = Signal(object, str)
     operacao_rele_gravada = Signal(str, list)
@@ -60,6 +62,7 @@ class BancoController(QObject):
 
         # Sinal ligado a sinal: o worker emite na thread do banco e o Qt reemite estes na
         # thread da interface, onde ficam os controllers que atualizam a tela.
+        self.worker.falhou.connect(self.falha_banco)
         self.worker.evento_gravado.connect(self.evento_gravado)
         self.worker.evento_nao_gravado.connect(self.evento_nao_gravado)
         self.worker.operacao_rele_gravada.connect(self.operacao_rele_gravada)
