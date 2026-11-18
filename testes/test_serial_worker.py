@@ -8,7 +8,9 @@ encurtados para os testes andarem rápido.
 import logging
 import time
 import unittest
+from datetime import datetime
 
+import shiboken6
 from PySide6.QtCore import QCoreApplication
 
 from controllers.serial_controller import SerialController
@@ -28,6 +30,7 @@ CONECTANDO = ConfiguracaoSerial.CONECTANDO
 NEGOCIANDO = ConfiguracaoSerial.NEGOCIANDO
 CALIBRANDO = ConfiguracaoSerial.CALIBRANDO
 CONECTADO = ConfiguracaoSerial.CONECTADO
+RECONECTANDO = ConfiguracaoSerial.RECONECTANDO
 
 
 def esperar(condicao, timeout_s=3.0) -> bool:
@@ -58,6 +61,7 @@ class TesteSerial(unittest.TestCase):
         worker.AMOSTRAS_CALIBRACAO = 10
         worker.TEMPO_CALIBRACAO_S = 0.3
         worker.PRAZO_RELE_S = 0.3
+        worker.INTERVALO_RECONEXAO_S = 0.2
 
     def setUp(self):
         # Configuração só em memória: o worker lê o config.json, e o de verdade não pode mudar.
@@ -271,15 +275,16 @@ class TestTelemetria(TesteSerial):
         self.placa.silenciar()
         self.assertTrue(esperar(lambda: self.recebidos("conexao_perdida")))
         self.assertIn("nenhum pacote válido", self.recebidos("conexao_perdida")[0][0])
-        self.assertFalse(self.placa.aberta)
-        self.assertEqual(self.serial.estado, DESCONECTADO)
+        # Reabrir a porta reinicia o Uno: a placa travada volta com a reconexão.
+        self.assertTrue(esperar(lambda: (PORTA, 115200, True) in self.recebidos("conectado")))
+        self.assertEqual(self.placa.aberturas, 2)
 
     def test_erro_na_porta_vira_conexao_perdida(self):
         self.conectar()
         self.placa.puxar_cabo()
         self.assertTrue(esperar(lambda: self.recebidos("conexao_perdida")))
         self.assertIn("erro na porta serial", self.recebidos("conexao_perdida")[0][0])
-        self.assertEqual(self.serial.estado, DESCONECTADO)
+        self.assertEqual(self.serial.estado, RECONECTANDO)
 
 
 class TestRele(TesteSerial):
@@ -338,6 +343,134 @@ class TestRele(TesteSerial):
         self.assertEqual(self.placa.comandos[-1], "!P\n")
         self.assertFalse(self.placa.transmitindo)
         self.assertEqual(self.recebidos("rele_nao_confirmado")[0][0], 1)
+
+
+class TestResiliencia(TesteSerial):
+    SINAIS = TesteSerial.SINAIS + (
+        "conexao_perdida", "leituras_recebidas", "rele_confirmado", "rele_nao_confirmado",
+        "rele_espontaneo", "botao_pressionado",
+    )
+
+    def encurtar_tempos(self, worker):
+        super().encurtar_tempos(worker)
+        worker.TEMPO_SILENCIO_S = 0.3
+
+    def puxar_e_religar_o_cabo(self):
+        self.placa.puxar_cabo()
+        self.assertTrue(esperar(lambda: self.serial.estado == RECONECTANDO))
+        time.sleep(0.5)  # algumas tentativas com o cabo fora
+        self.placa.religar_cabo()
+        self.assertTrue(esperar(lambda: (PORTA, 115200, True) in self.recebidos("conectado")))
+
+    def test_cabo_puxado_reconecta_sozinho_quando_volta(self):
+        self.conectar()
+        self.puxar_e_religar_o_cabo()
+        self.assertEqual(self.serial.estado, CONECTADO)
+        self.assertEqual(self.placa.aberturas, 2)
+        # As tentativas com o cabo fora não viram aviso para o operador.
+        self.assertEqual(self.recebidos("falha_conexao"), [])
+        quantas = len(self.recebidos("leituras_recebidas"))
+        self.assertTrue(esperar(lambda: len(self.recebidos("leituras_recebidas")) > quantas + 2))
+
+    def test_rele_que_volta_desligado_depois_da_reconexao_e_espontaneo(self):
+        self.conectar()
+        self.serial.enviar_comando_rele(1)
+        self.assertTrue(esperar(lambda: self.recebidos("rele_confirmado") == [(1,)]))
+        # Sem energia, o Uno reinicia com o relé desligado.
+        self.puxar_e_religar_o_cabo()
+        self.assertTrue(esperar(lambda: self.recebidos("rele_espontaneo")))
+        status, momento = self.recebidos("rele_espontaneo")[0]
+        self.assertEqual(status, 0)
+        self.assertIsInstance(momento, datetime)
+
+    def test_rele_mudando_sem_comando_e_espontaneo(self):
+        self.conectar()
+        self.assertTrue(esperar(lambda: self.recebidos("leituras_recebidas")))
+        self.placa.rele = 1
+        self.assertTrue(esperar(lambda: self.recebidos("rele_espontaneo")))
+        self.assertEqual(self.recebidos("rele_espontaneo")[0][0], 1)
+        self.assertEqual(self.recebidos("rele_confirmado"), [])
+
+    def test_comando_pendente_e_recusado_quando_o_cabo_cai(self):
+        self.conectar()
+        self.placa.responder_rele = False
+        self.serial.enviar_comando_rele(0)
+        self.assertTrue(esperar(lambda: "!0\n" in self.placa.comandos))
+        self.placa.puxar_cabo()
+        self.assertTrue(esperar(lambda: self.recebidos("rele_nao_confirmado")))
+        self.assertEqual(self.recebidos("rele_nao_confirmado")[0][0], 0)
+        self.assertIn("caiu", self.recebidos("rele_nao_confirmado")[0][1])
+
+    def test_desconectar_cancela_a_reconexao(self):
+        self.conectar()
+        self.placa.puxar_cabo()
+        self.assertTrue(esperar(lambda: self.serial.estado == RECONECTANDO))
+        self.serial.desconectar()
+        self.assertTrue(esperar(lambda: self.serial.estado == DESCONECTADO))
+        self.placa.religar_cabo()
+        time.sleep(0.5)
+        self.assertEqual(self.placa.aberturas, 1)
+        self.assertEqual(self.recebidos("desconectado"), [("encerrada pelo operador durante a reconexão",)])
+
+    def test_sem_reconexao_automatica_fica_desconectado(self):
+        ConfigManager._dados["reconectar_automaticamente"] = False
+        self.conectar()
+        self.placa.puxar_cabo()
+        self.assertTrue(esperar(lambda: self.recebidos("conexao_perdida")))
+        self.assertEqual(self.serial.estado, DESCONECTADO)
+
+    def test_botao_mantido_pressionado_dispara_uma_vez(self):
+        self.conectar()
+        self.placa.botao = 1
+        self.assertTrue(esperar(lambda: self.recebidos("botao_pressionado")))
+        time.sleep(0.2)
+        self.placa.botao = 0
+        time.sleep(0.1)
+        app.processEvents()
+        self.assertEqual(len(self.recebidos("botao_pressionado")), 1)
+        self.assertIsInstance(self.recebidos("botao_pressionado")[0][0], datetime)
+
+
+class TestEncerramento(TesteSerial):
+    SINAIS = TesteSerial.SINAIS + ("leituras_recebidas",)
+
+    def test_encerrar_conectado_pausa_a_placa_e_libera_o_worker(self):
+        # Lote longo: nenhum sai sozinho, então só o lote final do encerramento chega.
+        self.serial.worker.INTERVALO_LOTE_S = 60.0
+        self.conectar()
+        time.sleep(0.1)
+        worker = self.serial.worker
+        self.assertEqual(self.recebidos("leituras_recebidas"), [])
+        self.serial.encerrar()
+
+        self.assertFalse(self.serial.thread_serial.isRunning())
+        self.assertEqual(self.placa.comandos[-1], "!P\n")
+        self.assertFalse(self.placa.transmitindo)
+        self.assertFalse(self.placa.aberta)
+        # deleteLater ligado ao finished: o worker é apagado junto com o fim da thread.
+        self.assertFalse(shiboken6.isValid(worker))
+        # O último lote e a desconexão foram entregues antes de o encerrar() voltar.
+        self.assertEqual(len(self.recebidos("leituras_recebidas")), 1)
+        self.assertEqual(self.recebidos("desconectado"), [("encerrada no fechamento da aplicação",)])
+
+    def test_encerrar_no_meio_do_handshake(self):
+        self.placa.enviar_banner = False
+        self.serial.worker.TEMPO_BANNER_S = 10.0
+        self.serial.conectar(PORTA, 115200, 1000)
+        self.assertTrue(esperar(lambda: self.placa.aberta))
+        inicio = time.monotonic()
+        self.serial.encerrar()
+        self.assertLess(time.monotonic() - inicio, 1.0)
+        self.assertFalse(self.serial.thread_serial.isRunning())
+        self.assertFalse(self.placa.aberta)
+
+    def test_encerrar_duas_vezes_e_pedidos_depois_sao_ignorados(self):
+        self.serial.encerrar()
+        self.serial.encerrar()
+        self.serial.conectar(PORTA, 115200, 1000)
+        self.serial.desconectar()
+        self.serial.enviar_comando_rele(0)
+        self.assertEqual(self.placa.aberturas, 0)
 
 
 class TestConfiguracaoSerial(unittest.TestCase):

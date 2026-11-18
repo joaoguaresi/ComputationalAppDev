@@ -37,18 +37,20 @@ class MainWindowController:
         self.ui.setupUi(janela)
         self._ajustar_layout()
 
+        # Thread serial: começa parada (DESCONECTADO) e conecta quando o operador pede.
+        # Ligada ao aboutToQuit antes da do banco, para ser encerrada primeiro: quem
+        # produz as leituras para antes de quem as grava, e o último lote ainda é gravado.
+        self.serial = SerialController(self.janela)
+        self.serial.iniciar()
+        QApplication.instance().aboutToQuit.connect(self.serial.encerrar)
+        self.ultima_leitura = None
+
         # Thread do banco: começa com o dashboard e é encerrada no aboutToQuit, que o Qt
         # emite antes de a aplicação fechar.
         self.banco = BancoController(self.janela)
         self.banco.falha_banco.connect(self._avisar_falha_banco)
         self.banco.iniciar()
         QApplication.instance().aboutToQuit.connect(self.banco.encerrar)
-
-        # Thread serial: começa parada (DESCONECTADO) e conecta quando o operador pede.
-        self.serial = SerialController(self.janela)
-        self.serial.iniciar()
-        QApplication.instance().aboutToQuit.connect(self.serial.encerrar)
-        self.ultima_leitura = None
 
         self.simulador = SimuladorTelemetria()
         self.disjuntor = self._carregar_disjuntor()
@@ -126,6 +128,11 @@ class MainWindowController:
         self.serial.rele_confirmado.connect(self.corte.confirmar_rele)
         self.serial.rele_nao_confirmado.connect(self.corte.recusar_rele)
 
+        # Relé que mudou sem comando (o Uno reiniciou depois do cabo puxado, por exemplo)
+        # e botão da bancada: os dois vão para o histórico pelo DatabaseWorker.
+        self.serial.rele_espontaneo.connect(self.banco.registrar_rele_espontaneo)
+        self.serial.botao_pressionado.connect(self._ao_pressionar_botao_local)
+
     def _ao_receber_leituras(self, lote):
         """Lote de LeituraTelemetria da thread serial (uns 20 por vez, 10 vezes por segundo)."""
         self.banco.gravar_leituras(lote)
@@ -134,6 +141,18 @@ class MainWindowController:
         self._atualizar_indicadores(leitura)
         self.comandos.avaliar_protecao(leitura)
         self.limites.avaliar(leitura)
+
+    def _ao_pressionar_botao_local(self, momento):
+        """Botão da bancada (pino 11): disparo local do disjuntor.
+
+        Faz o mesmo corte do botão da tela, sem a pergunta de confirmação: o !0 vai para
+        a placa e a operação só é gravada quando ela confirma.
+        """
+        self.banco.registrar_botao_local(momento)
+        if self.disjuntor.esta_fechado():
+            self.corte.solicitar_corte()
+        else:
+            logger.info("Botão local pressionado com o disjuntor já aberto: nenhum comando enviado.")
 
     def _limpar_indicadores(self, *_motivo):
         """Sem placa, os mostradores ficam em branco, em vez de congelar no último valor."""

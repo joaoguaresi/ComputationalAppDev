@@ -45,6 +45,8 @@ class ConfigManager:
         # Mede o zero da corrente ao conectar (relé desligado = sem carga no sensor).
         # Na montagem com potenciômetro em A1, false deixa o zero fixo em zero_corrente_adc.
         "calibrar_zero_corrente": True,
+        # Conexão perdida (cabo USB puxado, placa travada): tenta de novo a cada 2 s.
+        "reconectar_automaticamente": True,
         # Janela da média gravada na tabela leituras (AgregadorLeituras).
         "taxa_amostragem_ms": 500,
     }

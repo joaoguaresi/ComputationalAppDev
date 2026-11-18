@@ -9,6 +9,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 
 from models.config_manager import ConfigManager
 from models.configuracao_serial import ConfiguracaoSerial
+from models.detector_botao import DetectorBotao
 from models.leitor_linhas import LeitorLinhas
 from models.leitura_telemetria import Calibracao, LeituraTelemetria, MediaMovel
 from models.rastreador_rele import RastreadorRele
@@ -111,6 +112,13 @@ class SerialWorker(QObject):
     JANELA_MEDIA_CORRENTE = 10
     # Prazo para a placa confirmar o !0/!1 (ACK e STATUS_RELE no valor pedido).
     PRAZO_RELE_S = RastreadorRele.PRAZO_PADRAO_S
+    # Conexão perdida: nova tentativa a cada 2 s. Com o cabo fora por muito tempo, o
+    # log registra só a primeira falha e depois uma a cada 15 tentativas (30 s).
+    INTERVALO_RECONEXAO_S = 2.0
+    AVISO_RECONEXAO_A_CADA = 15
+    # No fechamento da aplicação o ACK do !P é esperado por no máximo 1 s, mesmo com um
+    # timeout maior no painel: a interface espera a thread por tempo limitado.
+    PRAZO_PAUSA_NO_ENCERRAMENTO_S = 1.0
 
     _CONECTAR = "CONECTAR"
     _DESCONECTAR = "DESCONECTAR"
@@ -126,6 +134,8 @@ class SerialWorker(QObject):
     rele_inicial = Signal(int)          # STATUS_RELE do primeiro pacote depois de conectar
     rele_confirmado = Signal(int)       # STATUS_RELE pedido, confirmado pela placa
     rele_nao_confirmado = Signal(int, str)  # STATUS_RELE pedido e motivo
+    rele_espontaneo = Signal(int, object)   # STATUS_RELE novo e momento (datetime) da detecção
+    botao_pressionado = Signal(object)      # momento (datetime) do aperto confirmado
 
     def __init__(self, abrir_porta=abrir_porta_serial, listar_portas=ConfiguracaoSerial.listar_portas):
         # Sem pai: o moveToThread não aceita um objeto que tem pai.
@@ -158,6 +168,10 @@ class SerialWorker(QObject):
 
         self._rastreador = RastreadorRele(self.PRAZO_RELE_S)
         self._status_pedido = None  # STATUS_RELE do !0/!1 que aguarda confirmação
+        self._detector_botao = DetectorBotao()
+
+        self._tentativas = 0
+        self._proxima_tentativa = 0.0
 
         self._portas = None
         self._proxima_listagem = 0.0
@@ -198,6 +212,8 @@ class SerialWorker(QObject):
         while not self._parar.is_set():
             if self.estado == DESCONECTADO:
                 self._ciclo_desconectado()
+            elif self.estado == RECONECTANDO:
+                self._ciclo_reconectando()
             else:
                 self._ciclo_conectado()
         self._finalizar()
@@ -234,6 +250,29 @@ class SerialWorker(QObject):
         if agora - self._ultimo_pacote >= self.TEMPO_SILENCIO_S:
             self._perder_conexao(f"nenhum pacote válido em {self.TEMPO_SILENCIO_S:.0f} s")
 
+    def _ciclo_reconectando(self):
+        """Conexão perdida: a cada INTERVALO_RECONEXAO_S abre a porta e refaz o handshake.
+
+        Com o cabo fora, a porta nem existe e a abertura falha na hora. Quando o cabo
+        volta, abrir a porta reinicia o Uno, que manda o banner, e o handshake é o mesmo
+        da primeira conexão. O operador pode cancelar com Desconectar.
+        """
+        try:
+            comando = self._fila.get(timeout=self.ESPERA_FILA_S)
+        except queue.Empty:
+            comando = None
+        if comando is not None:
+            self._atender(comando)
+            if self.estado != RECONECTANDO:
+                return
+
+        if time.monotonic() >= self._proxima_tentativa:
+            self._tentativas += 1
+            if self._conectar(self._nome_porta, self._taxa, self._timeout_resposta_s * 1000, reconexao=True):
+                logger.info("Conexão com a placa restabelecida após %d tentativa(s).", self._tentativas)
+            else:
+                self._proxima_tentativa = time.monotonic() + self.INTERVALO_RECONEXAO_S
+
     def _atender_fila(self):
         """Atende, sem esperar, todos os pedidos que já estão na fila."""
         while True:
@@ -249,7 +288,9 @@ class SerialWorker(QObject):
             self._conectar(*comando[1:])
         elif tipo == self._DESCONECTAR:
             self._cancelar.clear()
-            if self.estado != DESCONECTADO:
+            if self.estado == RECONECTANDO:
+                self._desconectar("encerrada pelo operador durante a reconexão")
+            elif self.estado != DESCONECTADO:
                 self._desconectar("encerrada pelo operador")
         elif tipo == self._RELE:
             self._comandar_rele(comando[1])
@@ -265,13 +306,19 @@ class SerialWorker(QObject):
     # Conexão
     # ------------------------------------------------------------------
 
-    def _conectar(self, porta, taxa, timeout_ms):
-        if self.estado != DESCONECTADO:
+    def _conectar(self, porta, taxa, timeout_ms, reconexao=False) -> bool:
+        """Handshake completo. Devolve True se a telemetria foi liberada.
+
+        Numa reconexão automática a falha não vira aviso para o operador (a próxima
+        tentativa vem em seguida), e o estado do relé de antes da queda é mantido: se ele
+        voltar diferente, é uma mudança espontânea.
+        """
+        if not reconexao and self.estado != DESCONECTADO:
             logger.warning("Pedido de conexão ignorado: a conexão já está em %s.", self.estado)
-            return
+            return False
         if self._cancelar.is_set():
             # Um Desconectar que veio depois deste pedido já o cancelou.
-            return
+            return False
 
         self._nome_porta = porta
         self._taxa = taxa
@@ -284,20 +331,31 @@ class SerialWorker(QObject):
             self._confirmar_taxa()
             self._calibrar()
         except ConexaoInterrompidaError:
+            if self.estado in (NEGOCIANDO, CALIBRANDO):
+                # O !S já foi enviado e a placa pode estar transmitindo: volta ela para a espera.
+                self._pausar_placa()
             self._fechar_porta()
             logger.info("Conexão com a placa em %s cancelada durante o handshake.", porta)
             self._mudar_estado(DESCONECTADO)
             self.desconectado.emit("cancelada pelo operador durante o handshake")
+            return False
         except (FalhaConexaoError, serial.SerialException, OSError) as erro:
             self._fechar_porta()
-            logger.error("Falha ao conectar na placa em %s: %s.", porta, erro)
-            self._mudar_estado(DESCONECTADO)
-            self.falha_conexao.emit(str(erro))
-        else:
-            self._iniciar_telemetria()
-            self._mudar_estado(CONECTADO, f"{porta} @ {taxa} bps")
-            logger.info("Conectado à placa em %s a %d bps: telemetria liberada.", porta, taxa)
-            self.conectado.emit(porta, taxa, False)
+            if reconexao:
+                self._mudar_estado(RECONECTANDO, f"{porta}, tentativa {self._tentativas}")
+                if self._tentativas == 1 or self._tentativas % self.AVISO_RECONEXAO_A_CADA == 0:
+                    logger.warning("Reconexão com a placa em %s, tentativa %d: %s.", porta, self._tentativas, erro)
+            else:
+                logger.error("Falha ao conectar na placa em %s: %s.", porta, erro)
+                self._mudar_estado(DESCONECTADO)
+                self.falha_conexao.emit(str(erro))
+            return False
+
+        self._iniciar_telemetria(reconexao)
+        self._mudar_estado(CONECTADO, f"{porta} @ {taxa} bps")
+        logger.info("Conectado à placa em %s a %d bps: telemetria liberada.", porta, taxa)
+        self.conectado.emit(porta, taxa, reconexao)
+        return True
 
     def _abrir(self):
         """Abre a porta em 9600 bps, a taxa em que a placa liga."""
@@ -428,7 +486,7 @@ class SerialWorker(QObject):
     # Telemetria
     # ------------------------------------------------------------------
 
-    def _iniciar_telemetria(self):
+    def _iniciar_telemetria(self, reconexao=False):
         agora = time.monotonic()
         self._lote = []
         self._inicio_lote = agora
@@ -437,8 +495,14 @@ class SerialWorker(QObject):
         self._descartados = 0
         self._proximo_aviso_descarte = agora + self.INTERVALO_AVISO_DESCARTE_S
         self._rastreador.prazo_s = self.PRAZO_RELE_S
+        estado_antes_da_queda = self._rastreador.estado
         self._rastreador.reiniciar()
+        if reconexao:
+            # Comparado com o primeiro pacote depois da reconexão: o Uno reinicia com o
+            # relé desligado, e isso aparece como mudança espontânea.
+            self._rastreador.estado = estado_antes_da_queda
         self._status_pedido = None
+        self._detector_botao.reiniciar()
 
     def _tratar_linha(self, texto, agora):
         try:
@@ -469,7 +533,13 @@ class SerialWorker(QObject):
         # ACS712 faria o mostrador e o alarme tremerem.
         leitura.corrente_a = self._media_corrente.adicionar(leitura.corrente_a)
         self._lote.append(leitura)
-        self._acompanhar_rele(leitura.status_rele, agora)
+        self._acompanhar_rele(leitura, agora)
+
+        # O firmware manda o pino 11 cru, com os repiques do contato: o DetectorBotao só
+        # aceita o aperto que se mantém por algumas amostras seguidas.
+        if self._detector_botao.atualizar(leitura.status_botao):
+            logger.info("Botão da bancada pressionado (aperto confirmado pelo debounce).")
+            self.botao_pressionado.emit(leitura.timestamp)
 
     # ------------------------------------------------------------------
     # Relé: !0/!1 confirmados por ACK e STATUS_RELE
@@ -499,7 +569,8 @@ class SerialWorker(QObject):
         self._rastreador.comando_enviado(comando, time.monotonic())
         logger.info("Comando %s enviado à placa; aguardando o ACK e o STATUS_RELE.", comando.strip())
 
-    def _acompanhar_rele(self, status_rele, agora):
+    def _acompanhar_rele(self, leitura, agora):
+        status_rele = leitura.status_rele
         resultado = self._rastreador.atualizar(status_rele, agora)
         if resultado == RastreadorRele.INICIAL:
             logger.info("Relé da placa ao conectar: STATUS_RELE = %d.", status_rele)
@@ -517,7 +588,9 @@ class SerialWorker(QObject):
             logger.warning("A placa não confirmou o comando do relé: %s.", motivo)
             self.rele_nao_confirmado.emit(pedido, motivo)
         elif resultado == RastreadorRele.ESPONTANEO:
-            logger.warning("STATUS_RELE mudou para %d sem comando do operador.", status_rele)
+            # O WARNING vai para o log quando o DatabaseWorker grava o evento.
+            logger.info("STATUS_RELE mudou para %d sem comando do operador.", status_rele)
+            self.rele_espontaneo.emit(status_rele, leitura.timestamp)
 
     def _recusar_pendente(self, motivo):
         """Avisa que o !0/!1 que aguardava confirmação não vai mais ser confirmado."""
@@ -552,12 +625,23 @@ class SerialWorker(QObject):
             self._descartados = 0
 
     def _perder_conexao(self, motivo):
-        """A placa parou de responder: cabo puxado, placa reiniciada ou travada."""
+        """A placa parou de responder: cabo puxado, placa reiniciada ou travada.
+
+        Com reconectar_automaticamente no config.json (padrão), passa a RECONECTANDO e
+        tenta de novo sozinha; senão, fica DESCONECTADO até o operador conectar.
+        """
         logger.warning("Conexão com a placa em %s perdida: %s.", self._nome_porta, motivo)
         self._emitir_lote()
         self._fechar_porta()
         self._recusar_pendente("a conexão com a placa caiu antes da confirmação")
-        self._mudar_estado(DESCONECTADO)
+        if ConfigManager.get("reconectar_automaticamente", True):
+            self._tentativas = 0
+            self._proxima_tentativa = time.monotonic() + self.INTERVALO_RECONEXAO_S
+            self._mudar_estado(
+                RECONECTANDO, f"{self._nome_porta}, nova tentativa a cada {self.INTERVALO_RECONEXAO_S:.0f} s"
+            )
+        else:
+            self._mudar_estado(DESCONECTADO)
         self.conexao_perdida.emit(motivo)
 
     # ------------------------------------------------------------------
@@ -615,18 +699,17 @@ class SerialWorker(QObject):
 
     def _pausar_placa(self):
         """Envia o !P e espera o ACK. Uma falha aqui só vai para o log: a porta fecha de qualquer jeito."""
+        prazo_s = self._timeout_resposta_s
+        if self._parar.is_set():
+            prazo_s = min(prazo_s, self.PRAZO_PAUSA_NO_ENCERRAMENTO_S)
         try:
             self._escrever(COMANDO_PAUSA)
-            ack = self._esperar_linha(
-                lambda linha: linha.tipo == LinhaSerial.ACK_PAUSA, self._timeout_resposta_s, interrompivel=False
-            )
+            ack = self._esperar_linha(lambda linha: linha.tipo == LinhaSerial.ACK_PAUSA, prazo_s, interrompivel=False)
         except (serial.SerialException, OSError) as erro:
             logger.warning("Não foi possível pausar a placa em %s: %s.", self._nome_porta, erro)
             return
         if ack is None:
-            logger.warning(
-                "A placa em %s não confirmou o !P em %.0f ms.", self._nome_porta, self._timeout_resposta_s * 1000
-            )
+            logger.warning("A placa em %s não confirmou o !P em %.0f ms.", self._nome_porta, prazo_s * 1000)
         else:
             logger.info("Placa pausada: '%s'.", ack.texto)
 
@@ -659,9 +742,23 @@ class SerialWorker(QObject):
     # ------------------------------------------------------------------
 
     def _finalizar(self):
-        self._fechar_porta()
-        self.estado = DESCONECTADO
+        """Fim do laço, depois de parar(): pausa a placa, fecha a porta e termina a thread.
+
+        Com a placa conectada vai o !P: ela para a amostragem, volta a 9600 e fica em
+        espera, pronta para a próxima conexão. O último lote de leituras também sai.
+        """
+        if self._status_pedido is not None:
+            # Sem aviso para a interface: com a aplicação fechando, ele chegaria como uma
+            # janela de erro no meio do encerramento.
+            logger.warning("Aplicação fechada antes de a placa confirmar o comando do relé.")
+            self._status_pedido = None
+
+        if self._porta is not None:
+            self._desconectar("encerrada no fechamento da aplicação")
+        elif self.estado != DESCONECTADO:
+            self._mudar_estado(DESCONECTADO)
+
         logger.info("SerialWorker encerrado na thread %d.", threading.get_ident())
         # O laço rodou dentro do started da QThread. O quit() faz o exec() que vem
-        # depois dele terminar na hora, e a thread acaba.
+        # depois dele terminar na hora, e a thread acaba (finished -> deleteLater).
         self.thread().quit()

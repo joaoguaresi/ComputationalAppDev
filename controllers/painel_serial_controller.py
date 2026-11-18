@@ -164,9 +164,13 @@ class PainelSerialController(QObject):
         )
 
     def _ao_perder_conexao(self, motivo):
-        # Barra de status em vez de QMessageBox: o aviso não trava a tela.
+        # Barra de status em vez de QMessageBox: o aviso não trava a tela enquanto a
+        # thread serial tenta reconectar.
         self._registrar(f"Conexão com a placa perdida: {motivo}")
-        self.janela.statusBar().showMessage(f"Conexão com a placa perdida: {motivo}.", self.DURACAO_AVISO_MS)
+        aviso = f"Conexão com a placa perdida: {motivo}."
+        if ConfigManager.get("reconectar_automaticamente", True):
+            aviso += " Tentando reconectar; Desconectar cancela."
+        self.janela.statusBar().showMessage(aviso, self.DURACAO_AVISO_MS)
 
     def _registrar(self, descricao):
         self.historico.registrar(EventoHistorico(EventoHistorico.CONEXAO_SERIAL, descricao))

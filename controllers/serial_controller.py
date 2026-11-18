@@ -1,7 +1,7 @@
 import logging
 import threading
 
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QCoreApplication, QObject, QThread, Signal
 
 from controllers.serial_worker import SerialWorker
 from models.configuracao_serial import ConfiguracaoSerial
@@ -17,6 +17,10 @@ class SerialController(QObject):
     As respostas chegam pelos sinais daqui, que o Qt reemite na thread da interface.
     """
 
+    # O worker confere o aviso de parar a cada 20 ms; o que mais demora no encerramento
+    # é o !P, cujo ACK é esperado por até 1 s. Este tempo cobre os dois, com folga.
+    TEMPO_MAXIMO_ENCERRAMENTO_MS = 3000
+
     estado_alterado = Signal(str, str)
     portas_listadas = Signal(list)
     conectado = Signal(str, int, bool)
@@ -27,11 +31,14 @@ class SerialController(QObject):
     rele_inicial = Signal(int)
     rele_confirmado = Signal(int)
     rele_nao_confirmado = Signal(int, str)
+    rele_espontaneo = Signal(int, object)
+    botao_pressionado = Signal(object)
 
     def __init__(self, parent=None, **opcoes_worker):
         """opcoes_worker vai para o SerialWorker; os testes passam uma placa simulada."""
         super().__init__(parent)
         self.estado = ConfiguracaoSerial.DESCONECTADO
+        self._encerrado = False
 
         # O nome não é "thread" para não esconder o método QObject.thread().
         self.thread_serial = QThread()
@@ -57,6 +64,10 @@ class SerialController(QObject):
         self.worker.rele_inicial.connect(self.rele_inicial)
         self.worker.rele_confirmado.connect(self.rele_confirmado)
         self.worker.rele_nao_confirmado.connect(self.rele_nao_confirmado)
+        self.worker.rele_espontaneo.connect(self.rele_espontaneo)
+        self.worker.botao_pressionado.connect(self.botao_pressionado)
+        # O worker vive na thread serial: o deleteLater dele é atendido quando ela termina.
+        self.thread_serial.finished.connect(self.worker.deleteLater)
 
     def _guardar_estado(self, estado, _detalhe):
         self.estado = estado
@@ -67,10 +78,12 @@ class SerialController(QObject):
 
     def conectar(self, porta, taxa, timeout_ms):
         """Pede a conexão; o andamento vem por estado_alterado e o resultado por conectado ou falha_conexao."""
-        self.worker.pedir_conexao(porta, taxa, timeout_ms)
+        if not self._encerrado:
+            self.worker.pedir_conexao(porta, taxa, timeout_ms)
 
     def desconectar(self):
-        self.worker.pedir_desconexao()
+        if not self._encerrado:
+            self.worker.pedir_desconexao()
 
     def enviar_comando_rele(self, status_rele):
         """Pede o !1 (1) ou o !0 (0) à placa; a resposta vem por rele_confirmado ou rele_nao_confirmado.
@@ -78,7 +91,7 @@ class SerialController(QObject):
         Sem conexão, o pedido é recusado na hora: o corte e o religamento só valem com a
         placa confirmando.
         """
-        if not self.esta_conectado():
+        if self._encerrado or not self.esta_conectado():
             self.rele_nao_confirmado.emit(status_rele, "a placa não está conectada")
             return
         self.worker.pedir_rele(status_rele)
@@ -87,8 +100,38 @@ class SerialController(QObject):
         return self.estado == ConfiguracaoSerial.CONECTADO
 
     def encerrar(self):
-        """Pede ao worker que pare e espera a thread terminar."""
-        if not self.thread_serial.isRunning():
+        """Encerramento cooperativo: parar, quit, wait e deleteLater.
+
+        parar() só liga o aviso; o próprio worker termina o laço, manda o !P se a placa
+        estiver conectada, fecha a porta e chama quit(). Aqui o wait() espera a thread
+        acabar. Não usa QThread.terminate(), que mataria a thread no meio de uma escrita
+        na porta.
+
+        Chamado pelo aboutToQuit antes do encerramento do banco: o último lote de
+        leituras e o evento da desconexão, que o worker emitiu ao sair, ainda são
+        entregues aqui e chegam ao DatabaseWorker antes de ele fechar.
+        """
+        if self._encerrado:
             return
+        self._encerrado = True
+        if not self.thread_serial.isRunning():
+            self.thread_serial.deleteLater()
+            return
+
         self.worker.parar()
-        self.thread_serial.wait()
+        if not self.thread_serial.wait(self.TEMPO_MAXIMO_ENCERRAMENTO_MS):
+            # Por exemplo, a abertura de uma porta Bluetooth que não responde: o Windows
+            # não devolve o controle, e a thread não chega a conferir o aviso de parar.
+            logger.error(
+                "A thread serial não terminou em %d ms após o pedido de encerramento.",
+                self.TEMPO_MAXIMO_ENCERRAMENTO_MS,
+            )
+            return
+
+        # Os sinais que o worker emitiu ao sair estão na fila deste objeto, e o laço de
+        # eventos da interface já parou (estamos no aboutToQuit): entrega agora.
+        QCoreApplication.sendPostedEvents(self)
+        # A QThread vive na thread da interface. Como no BancoController, o deleteLater
+        # vai depois do wait(), e o Qt ainda o atende ao fechar a aplicação.
+        self.thread_serial.deleteLater()
+        logger.info("Thread serial encerrada.")

@@ -95,6 +95,7 @@ O arquivo `data/config.json` guarda os parâmetros de inicialização e comunica
 | `sensibilidade_corrente` | sensibilidade do ACS712-30A em A1 (V/A) | `0.066` |
 | `zero_corrente_adc` | contagem do ADC que corresponde a 0 A | `512.0` |
 | `calibrar_zero_corrente` | mede o zero da corrente ao conectar, com o relé desligado (`false` na montagem com potenciômetro em A1) | `true` |
+| `reconectar_automaticamente` | com a conexão perdida (cabo USB puxado, placa travada), tenta de novo a cada 2 s | `true` |
 | `taxa_amostragem_ms` | janela da média gravada na tabela `leituras` (ms) | `500` |
 
 - Se o arquivo não existir (`os.path.exists`), ele é criado com os valores padrão. Se estiver corrompido, os padrões são restaurados e o erro vai para o log. Chaves que faltarem são acrescentadas com o valor padrão.
@@ -171,6 +172,49 @@ A placa é um Arduino Uno com o firmware oficial do professor (`codigo_arduino.i
 
 **Testes**: na raiz do projeto, rode `python -m unittest`. Eles usam linhas iguais às do firmware e não precisam da placa. Observação: o exemplo de checksum do manual (`$DAT,512,716,1,0*2C`) tem um erro de conta na tabela passo a passo (75 XOR 44 = 103, não 119); o checksum correto desse pacote, que o firmware envia, é `56`.
 
+## Thread serial, handshake e resiliência (A1/5)
+
+A aplicação roda em três threads: a da interface, a serial (`controllers/serial_worker.py`) e a do banco (`controllers/database_worker.py`). A interface nunca abre, lê ou escreve na porta. O `SerialController` cria o `SerialWorker`, move-o para uma `QThread` e liga o `started` dela ao laço do worker. Os pedidos (conectar, desconectar, `!0`/`!1`) entram numa `queue.Queue` e voltam na hora; as respostas chegam por sinais, entregues pelo Qt na thread da interface.
+
+**Máquina de estados** (`models/configuracao_serial.py`):
+
+| Estado | O que está acontecendo |
+|---|---|
+| `DESCONECTADO` | porta fechada; a lista de portas do painel é atualizada a cada 2 s |
+| `CONECTANDO` | porta aberta em 9600 bps; abrir a porta reinicia o Uno, e o worker espera o banner `PLACA EM ESPERA (9600 baud)` |
+| `NEGOCIANDO` | `!S<taxa>` enviado; espera `>>> ACK: INICIANDO EM <taxa> BPS <<<` ou o ERR, ainda em 9600 |
+| `CALIBRANDO` | porta já na taxa nova, sem fechar (reabrir reiniciaria o Uno); as primeiras amostras, com o relé desligado, dão o zero da corrente |
+| `CONECTADO` | telemetria `$DAT` chegando |
+| `RECONECTANDO` | conexão perdida; nova tentativa de abrir a porta e refazer o handshake a cada 2 s |
+| `DESCONECTANDO` | `!P` enviado; a placa volta a 9600 e fica em espera |
+
+- **Telemetria**: cada `$DAT` passa pelo `validar_pacote` do manual; checksum errado, campo faltando ou valor fora da faixa é descartado e resumido no log a cada 10 s. As leituras saem em lotes a cada 100 ms (uns 20 pacotes), que vão para os mostradores, os limites e o banco. A corrente passa por uma média móvel de 10 amostras.
+- **Watchdog**: 2 s sem nenhum pacote válido derruba a conexão (placa travada ou reiniciada).
+- **Relé**: o corte e o religamento mandam `!0`/`!1` e só são gravados quando chega o ACK **e** o STATUS_RELE dos pacotes fica no valor pedido, em até 2 s. Sem placa conectada o comando é recusado na hora e nada é gravado.
+- **Cabo USB puxado**: o erro da porta (ou o silêncio) leva a `RECONECTANDO`. Quando o cabo volta, o handshake é refeito sozinho. Um comando do relé que esperava confirmação é recusado.
+- **Relé mudando sozinho**: se o STATUS_RELE muda sem comando, como quando o Uno reinicia depois de ficar sem energia, a mudança vai para o histórico como "Mudança Espontânea do Relé".
+- **Botão da bancada** (pino 11): o aperto confirmado pelo debounce é gravado no histórico e faz o mesmo corte do botão da tela, sem a pergunta de confirmação.
+- **Encerramento**: no `aboutToQuit`, a serial encerra antes do banco. O worker manda `!P` se a placa estiver conectada, fecha a porta e chama `quit()`; o `SerialController` espera a thread com `wait()` e libera worker e thread com `deleteLater()`. O último lote e o evento da desconexão ainda chegam ao banco.
+
+**Taxas**: o pacote `$DAT,512,716,1,0*56\r\n` tem 22 caracteres (220 bits). A 200 pacotes por segundo, só 115200 dá conta; nas outras taxas a placa manda menos pacotes, e os dados continuam válidos.
+
+| Taxa | Pacotes por segundo (aprox.) |
+|---|---|
+| 9600 | 43 |
+| 19200 | 87 |
+| 38400 | 174 |
+| 115200 | 200 (limite do firmware) |
+
+**Roteiro de teste na bancada**:
+
+1. Feche o Monitor Serial da Arduino IDE (senão a porta abre com "Acesso negado").
+2. Escolha a porta do Arduino (as portas Bluetooth também aparecem; a do Arduino costuma ter "USB-SERIAL CH340" ou "Arduino" no nome) e a taxa, e clique em **Conectar**. O painel passa por CONECTANDO, HANDSHAKE e CALIBRANDO O ZERO até CONECTADO.
+3. Gire os potenciômetros: tensão e corrente mudam nos mostradores. Clique em **CORTE DE EMERGÊNCIA** (o LED acende: o relé é active-low) e em **Religar**.
+4. Aperte o botão da bancada: o disjuntor abre como no botão da tela.
+5. Puxe o cabo USB: o painel fica vermelho em RECONECTANDO. Recoloque o cabo: a conexão volta sozinha, e o histórico mostra a perda, a reconexão e, se o relé estava ligado, a mudança espontânea.
+
+**Testes**: `python -m unittest` também roda os testes da thread serial (`testes/test_serial_worker.py`). Eles usam a `PlacaSimulada` (`testes/placa_simulada.py`), que imita o firmware atrás da mesma interface do pyserial, inclusive o cabo puxado.
+
 ## Como executar
 
 ```
@@ -184,4 +228,4 @@ Para usar um ambiente virtual (opcional), antes do `pip install` rode `python -m
 
 ## Status atual
 
-Entrega A1/2 concluída. O estado dos dispositivos, o histórico de eventos e os limites de segurança ficam gravados em SQLite; o corte emergencial é transacional, com demonstração de ROLLBACK; os parâmetros de inicialização ficam no `config.json`; e operações, anomalias e erros são registrados em `logs/smartgrid.log`. A comunicação serial com o hardware continua simulada e será implementada na Unidade 4.
+Entrega A1/2 concluída. O estado dos dispositivos, o histórico de eventos e os limites de segurança ficam gravados em SQLite; o corte emergencial é transacional, com demonstração de ROLLBACK; os parâmetros de inicialização ficam no `config.json`; e operações, anomalias e erros são registrados em `logs/smartgrid.log`. Na A1/5, a comunicação serial com a placa é real, numa thread própria, com handshake, confirmação do relé e reconexão automática.
