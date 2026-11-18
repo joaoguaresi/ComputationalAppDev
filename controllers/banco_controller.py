@@ -27,6 +27,7 @@ class BancoController(QObject):
     rele_espontaneo_solicitado = Signal(int, object)
     botao_local_solicitado = Signal(object)
     operacao_rele_solicitada = Signal(str, list, bool)
+    consulta_solicitada = Signal(int, object)
     encerramento_solicitado = Signal()
 
     # Repassam as respostas do worker, já na thread da interface.
@@ -34,10 +35,13 @@ class BancoController(QObject):
     evento_nao_gravado = Signal(object, str)
     operacao_rele_gravada = Signal(str, list)
     operacao_rele_falhou = Signal(str, str, str)
+    historico_consultado = Signal(int, list, int)
+    historico_falhou = Signal(int, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._encerrado = False
+        self._ultimo_pedido = 0
 
         # O nome não é "thread" para não esconder o método QObject.thread().
         self.thread_banco = QThread()
@@ -51,6 +55,7 @@ class BancoController(QObject):
         self.rele_espontaneo_solicitado.connect(self.worker.registrar_rele_espontaneo)
         self.botao_local_solicitado.connect(self.worker.registrar_botao_local)
         self.operacao_rele_solicitada.connect(self.worker.gravar_operacao_rele)
+        self.consulta_solicitada.connect(self.worker.consultar_historico)
         self.encerramento_solicitado.connect(self.worker.encerrar)
 
         # Sinal ligado a sinal: o worker emite na thread do banco e o Qt reemite estes na
@@ -59,6 +64,8 @@ class BancoController(QObject):
         self.worker.evento_nao_gravado.connect(self.evento_nao_gravado)
         self.worker.operacao_rele_gravada.connect(self.operacao_rele_gravada)
         self.worker.operacao_rele_falhou.connect(self.operacao_rele_falhou)
+        self.worker.historico_consultado.connect(self.historico_consultado)
+        self.worker.historico_falhou.connect(self.historico_falhou)
         # O worker vive na thread do banco: o deleteLater dele é atendido quando ela termina.
         self.thread_banco.finished.connect(self.worker.deleteLater)
 
@@ -92,6 +99,17 @@ class BancoController(QObject):
         """Pede a gravação do corte (ABERTO) ou do religamento (FECHADO), já confirmado
         pela placa. A resposta vem por operacao_rele_gravada ou operacao_rele_falhou."""
         self.operacao_rele_solicitada.emit(status, list(eventos), simular_falha)
+
+    def consultar_historico(self, filtro) -> int:
+        """Pede a consulta do FiltroHistorico e devolve o número do pedido na hora.
+
+        A resposta vem por historico_consultado ou historico_falhou com o mesmo número.
+        Se o operador disparar várias consultas seguidas, quem pediu compara o número e
+        ignora as respostas dos pedidos antigos.
+        """
+        self._ultimo_pedido += 1
+        self.consulta_solicitada.emit(self._ultimo_pedido, filtro)
+        return self._ultimo_pedido
 
     def encerrar(self):
         """Encerramento cooperativo: pede ao worker que pare e espera a thread terminar.

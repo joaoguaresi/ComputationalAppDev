@@ -1,6 +1,8 @@
 import logging
+import math
 import sqlite3
 import threading
+import time
 
 from PySide6.QtCore import QObject, Signal, Slot
 
@@ -10,6 +12,7 @@ from models.dispositivo import Dispositivo
 from models.dispositivo_repository import DispositivoRepository
 from models.evento_historico import EventoHistorico
 from models.evento_repository import EventoRepository
+from models.filtro_historico import FiltroHistorico
 from models.leitura_repository import LeituraRepository
 
 logger = logging.getLogger("smartgrid")
@@ -47,6 +50,11 @@ class DatabaseWorker(QObject):
     operacao_rele_gravada = Signal(str, list)
     operacao_rele_falhou = Signal(str, str, str)
 
+    # Respostas da consulta de histórico: número do pedido, leituras e quantas janelas
+    # gravadas formam cada ponto (1 = sem agrupamento); ou número do pedido e motivo.
+    historico_consultado = Signal(int, list, int)
+    historico_falhou = Signal(int, str)
+
     def __init__(self):
         # Sem pai: o moveToThread não aceita um objeto que tem pai.
         super().__init__()
@@ -80,6 +88,49 @@ class DatabaseWorker(QObject):
         for leitura in leituras:
             janelas.extend(self._agregador.adicionar(leitura))
         self._gravar_janelas(janelas)
+
+    @Slot(int, object)
+    def consultar_historico(self, pedido, filtro):
+        """Consulta as leituras do FiltroHistorico e devolve por historico_consultado.
+
+        Roda na thread do banco: a tela continua respondendo enquanto a consulta anda.
+        Se o filtro tiver mais leituras que FiltroHistorico.QUANTIDADE_MAXIMA (um intervalo
+        longo: 2 leituras por segundo dão 7.200 por hora), elas são agrupadas em blocos
+        seguidos e cada ponto devolvido é a média de um bloco.
+        """
+        try:
+            filtro.validar()
+        except ValueError as erro:
+            logger.warning("Consulta de histórico recusada: %s", erro)
+            self.historico_falhou.emit(pedido, str(erro))
+            return
+
+        if self._conn is None:
+            logger.error("Consulta de histórico não feita: a conexão do DatabaseWorker não está aberta.")
+            self.historico_falhou.emit(pedido, "a conexão com o banco não está aberta")
+            return
+
+        inicio = time.perf_counter()
+        try:
+            total = LeituraRepository.contar(filtro, conn=self._conn)
+            agrupar = max(1, math.ceil(total / FiltroHistorico.QUANTIDADE_MAXIMA))
+            leituras = LeituraRepository.listar(filtro, conn=self._conn, agrupar=agrupar)
+        except sqlite3.Error as erro:
+            logger.error("Falha na consulta de histórico (%s): %s", filtro.descrever(), erro)
+            self.historico_falhou.emit(pedido, str(erro))
+            return
+
+        duracao_ms = (time.perf_counter() - inicio) * 1000
+        if agrupar > 1:
+            logger.info(
+                "Histórico consultado (%s): %d leituras agrupadas em %d pontos de %d em %.0f ms.",
+                filtro.descrever(), total, len(leituras), agrupar, duracao_ms,
+            )
+        else:
+            logger.info(
+                "Histórico consultado (%s): %d leitura(s) em %.0f ms.", filtro.descrever(), len(leituras), duracao_ms
+            )
+        self.historico_consultado.emit(pedido, leituras, agrupar)
 
     @Slot(object)
     def registrar_evento(self, evento):

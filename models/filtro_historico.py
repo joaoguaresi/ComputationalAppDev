@@ -14,8 +14,9 @@ class FiltroHistorico:
     ULTIMAS = "ULTIMAS"
     INTERVALO = "INTERVALO"
 
-    # Teto das "últimas N": cada leitura vira um ponto do gráfico, e uma quantidade sem
-    # limite poderia carregar a tabela inteira na memória.
+    # Teto das "últimas N" e de pontos devolvidos por consulta: cada leitura vira um ponto
+    # do gráfico, e uma quantidade sem limite poderia carregar a tabela inteira na memória.
+    # Um intervalo com mais leituras que isso é agrupado pela consulta do DatabaseWorker.
     QUANTIDADE_MAXIMA = 10000
 
     FORMATO_DATA_HORA = "%d/%m/%Y %H:%M:%S"
