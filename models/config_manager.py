@@ -42,6 +42,9 @@ class ConfigManager:
         "fator_tensao": TENSAO_MAXIMA_V / ADC_MAXIMO,
         "sensibilidade_corrente": 0.066,
         "zero_corrente_adc": 512.0,
+        # Mede o zero da corrente ao conectar (relé desligado = sem carga no sensor).
+        # Na montagem com potenciômetro em A1, false deixa o zero fixo em zero_corrente_adc.
+        "calibrar_zero_corrente": True,
         # Janela da média gravada na tabela leituras (AgregadorLeituras).
         "taxa_amostragem_ms": 500,
     }

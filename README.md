@@ -94,6 +94,7 @@ O arquivo `data/config.json` guarda os parâmetros de inicialização e comunica
 | `fator_tensao` | volts por contagem do ADC em A0 (12 V = 1023) | `12/1023` |
 | `sensibilidade_corrente` | sensibilidade do ACS712-30A em A1 (V/A) | `0.066` |
 | `zero_corrente_adc` | contagem do ADC que corresponde a 0 A | `512.0` |
+| `calibrar_zero_corrente` | mede o zero da corrente ao conectar, com o relé desligado (`false` na montagem com potenciômetro em A1) | `true` |
 | `taxa_amostragem_ms` | janela da média gravada na tabela `leituras` (ms) | `500` |
 
 - Se o arquivo não existir (`os.path.exists`), ele é criado com os valores padrão. Se estiver corrompido, os padrões são restaurados e o erro vai para o log. Chaves que faltarem são acrescentadas com o valor padrão.

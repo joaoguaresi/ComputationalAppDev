@@ -2,12 +2,22 @@ import logging
 import queue
 import threading
 import time
+from collections import deque
 
 import serial
 from PySide6.QtCore import QObject, Signal, Slot
 
+from models.config_manager import ConfigManager
 from models.configuracao_serial import ConfiguracaoSerial
-from models.protocolo import TAXA_INICIAL
+from models.leitor_linhas import LeitorLinhas
+from models.leitura_telemetria import Calibracao
+from models.protocolo import (
+    TAXA_INICIAL,
+    LinhaSerial,
+    ProtocoloError,
+    interpretar_linha,
+    montar_comando_taxa,
+)
 
 logger = logging.getLogger("smartgrid")
 
@@ -77,6 +87,15 @@ class SerialWorker(QObject):
     ESPERA_FILA_S = 0.2
     # De quanto em quanto tempo a lista de portas do painel é atualizada.
     INTERVALO_PORTAS_S = 2.0
+    # Abrir a porta reinicia o Uno: o bootloader leva perto de 2 s antes de o firmware
+    # mandar o banner.
+    TEMPO_BANNER_S = 4.0
+    TEMPO_FIM_BANNER_S = 0.5
+    # Depois do ACK: prazo do primeiro $DAT e coleta do zero da corrente (100 amostras
+    # são 0,5 s a 200 Hz; em 9600 bps chegam só uns 43 pacotes por segundo).
+    TEMPO_PRIMEIRA_TELEMETRIA_S = 2.0
+    AMOSTRAS_CALIBRACAO = 100
+    TEMPO_CALIBRACAO_S = 1.0
 
     _CONECTAR = "CONECTAR"
     _DESCONECTAR = "DESCONECTAR"
@@ -102,6 +121,10 @@ class SerialWorker(QObject):
         self._nome_porta = ""
         self._taxa = None
         self._timeout_resposta_s = ConfiguracaoSerial.TIMEOUT_PADRAO / 1000
+        self._calibracao = Calibracao()
+
+        self._leitor = LeitorLinhas()
+        self._pendentes = deque()  # linhas já lidas da porta e ainda não tratadas
 
         self._portas = None
         self._proxima_listagem = 0.0
@@ -196,20 +219,140 @@ class SerialWorker(QObject):
 
         try:
             self._abrir()
-        except FalhaConexaoError as erro:
+            self._esperar_banner()
+            self._pedir_taxa()
+            self._confirmar_taxa()
+            self._calibrar()
+        except ConexaoInterrompidaError:
+            self._fechar_porta()
+            logger.info("Conexão com a placa em %s cancelada durante o handshake.", porta)
+            self._mudar_estado(DESCONECTADO)
+            self.desconectado.emit("cancelada durante o handshake")
+        except (FalhaConexaoError, serial.SerialException, OSError) as erro:
             self._fechar_porta()
             logger.error("Falha ao conectar na placa em %s: %s.", porta, erro)
             self._mudar_estado(DESCONECTADO)
             self.falha_conexao.emit(str(erro))
+        else:
+            self._mudar_estado(CONECTADO, f"{porta} @ {taxa} bps")
+            logger.info("Conectado à placa em %s a %d bps: telemetria liberada.", porta, taxa)
+            self.conectado.emit(porta, taxa, False)
 
     def _abrir(self):
-        """Abre a porta em 9600 bps."""
-        self._mudar_estado(CONECTANDO, f"{self._nome_porta} em {TAXA_INICIAL} bps")
+        """Abre a porta em 9600 bps, a taxa em que a placa liga."""
+        self._mudar_estado(CONECTANDO, f"{self._nome_porta} em {TAXA_INICIAL} bps, aguardando a placa")
+        self._leitor.limpar()
+        self._pendentes.clear()
         try:
             self._porta = self._abrir_porta(self._nome_porta)
         except (serial.SerialException, OSError, ValueError) as erro:
             raise FalhaConexaoError(self._explicar_erro_abertura(erro)) from erro
         logger.info("Porta %s aberta em %d bps.", self._nome_porta, TAXA_INICIAL)
+
+    def _esperar_banner(self):
+        """Espera o banner que o Uno manda ao reiniciar (abrir a porta reinicia a placa).
+
+        Enquanto o bootloader roda, um comando enviado se perde: o !S só vai depois do
+        banner. Se o banner não vier (placa que não reinicia ao abrir a porta ou que já
+        estava em espera), o handshake segue assim mesmo, porque a placa em espera
+        aceita o !S do mesmo jeito; se ela não responder, a falha aparece no ACK.
+        """
+        banner = self._esperar_linha(lambda linha: linha.tipo == LinhaSerial.BANNER, self.TEMPO_BANNER_S)
+        if banner is None:
+            logger.warning(
+                "Banner da placa não chegou em %.1f s em %s; o comando de taxa vai ser enviado assim mesmo.",
+                self.TEMPO_BANNER_S, self._nome_porta,
+            )
+            return
+
+        logger.info("Placa em espera em %s: '%s'.", self._nome_porta, banner.texto)
+        # O banner termina numa linha de "=": o !S vai depois dela.
+        self._esperar_linha(lambda linha: linha.texto.startswith("="), self.TEMPO_FIM_BANNER_S)
+
+    def _pedir_taxa(self):
+        """Primeiro pacote do handshake: !S<taxa>, ainda em 9600 bps."""
+        try:
+            comando = montar_comando_taxa(self._taxa)
+        except ProtocoloError as erro:
+            raise FalhaConexaoError(str(erro)) from erro
+
+        self._mudar_estado(NEGOCIANDO, f"{comando.strip()} enviado, aguardando o ACK em {TAXA_INICIAL} bps")
+        self._escrever(comando)
+        logger.info("Handshake: %s enviado à placa em %d bps.", comando.strip(), TAXA_INICIAL)
+
+    def _confirmar_taxa(self):
+        """Lê a resposta do !S ainda em 9600 e passa a porta para a taxa nova.
+
+        A placa responde ACK (ou ERR) na taxa antiga e só depois troca a dela. A porta
+        troca de taxa aberta: fechar e abrir de novo mexeria no DTR, o Uno reiniciaria e
+        voltaria ao modo de espera em 9600, desfazendo o handshake.
+        """
+        resposta = self._esperar_linha(
+            lambda linha: linha.tipo in (LinhaSerial.ACK_TAXA, LinhaSerial.ERR_TAXA),
+            self._timeout_resposta_s,
+        )
+        if resposta is None:
+            raise FalhaConexaoError(
+                f"a placa não respondeu ao !S{self._taxa} em {self._timeout_resposta_s * 1000:.0f} ms "
+                "(confira se a porta é a do Arduino e se ele está com o firmware do professor)"
+            )
+        if resposta.tipo == LinhaSerial.ERR_TAXA:
+            raise FalhaConexaoError(f"a placa recusou a taxa {self._taxa}: '{resposta.texto}'")
+        if resposta.valor != self._taxa:
+            raise FalhaConexaoError(f"a placa confirmou {resposta.valor} bps em vez de {self._taxa}")
+
+        logger.info("Handshake: placa respondeu '%s' em %d bps.", resposta.texto, TAXA_INICIAL)
+        self._porta.baudrate = self._taxa
+        # O que chegou depois do ACK foi enviado durante a troca de taxa: é lixo.
+        self._porta.reset_input_buffer()
+        self._leitor.limpar()
+        self._pendentes.clear()
+
+    def _calibrar(self):
+        """Mede o zero da corrente nas primeiras leituras, com o relé desligado.
+
+        O firmware começa com o relé desligado: sem carga, a média de A1 é o zero do
+        ACS712 (perto de 512). Com o relé ligado há corrente passando, e o zero do
+        config.json é mantido. As leituras da calibração não vão para a tela nem para
+        o banco.
+        """
+        self._calibracao = Calibracao.do_config()
+        self._mudar_estado(CALIBRANDO, f"{self._nome_porta} @ {self._taxa} bps")
+
+        def eh_dados(linha):
+            return linha.tipo == LinhaSerial.DADOS
+
+        primeira = self._esperar_linha(eh_dados, self.TEMPO_PRIMEIRA_TELEMETRIA_S)
+        if primeira is None:
+            raise FalhaConexaoError(
+                f"a placa confirmou {self._taxa} bps, mas a telemetria não chegou em "
+                f"{self.TEMPO_PRIMEIRA_TELEMETRIA_S:.0f} s"
+            )
+
+        amostras = [primeira.valor]
+        limite = time.monotonic() + self.TEMPO_CALIBRACAO_S
+        while len(amostras) < self.AMOSTRAS_CALIBRACAO and time.monotonic() < limite:
+            linha = self._esperar_linha(eh_dados, limite - time.monotonic())
+            if linha is None:
+                break
+            amostras.append(linha.valor)
+
+        zero_configurado = self._calibracao.zero_corrente_adc
+        if not ConfigManager.get("calibrar_zero_corrente", True):
+            logger.info("Calibração do zero desligada no config.json: zero da corrente fixo em %.1f.", zero_configurado)
+            return
+        if any(campos["status_rele"] == 1 for campos in amostras):
+            logger.warning(
+                "Relé ligado durante a calibração: há carga no sensor. Mantido o zero de %.1f do config.json.",
+                zero_configurado,
+            )
+            return
+
+        zero = self._calibracao.calibrar_zero(campos["a1"] for campos in amostras)
+        if abs(zero - Calibracao.ZERO_CORRENTE_PADRAO) > Calibracao.DESVIO_MAXIMO_ZERO:
+            # A Calibracao já avisou no log: um zero tão longe do meio da escala não é usado.
+            self._calibracao.zero_corrente_adc = zero_configurado
+            logger.warning("Zero calibrado descartado; mantido o zero de %.1f do config.json.", zero_configurado)
 
     @staticmethod
     def _explicar_erro_abertura(erro) -> str:
@@ -219,6 +362,46 @@ class SerialWorker(QObject):
         if "FileNotFoundError" in texto:
             return f"a porta não existe ou a placa foi desconectada - {texto}"
         return f"não foi possível abrir a porta - {texto}"
+
+    # ------------------------------------------------------------------
+    # Leitura e escrita na porta
+    # ------------------------------------------------------------------
+
+    def _ler_linhas(self):
+        """Lê o que chegou na porta (espera até TIMEOUT_LEITURA_S) e guarda as linhas completas."""
+        dados = self._porta.read(self._porta.in_waiting or 1)
+        if dados:
+            self._pendentes.extend(self._leitor.adicionar(dados))
+
+    def _esperar_linha(self, aceitar, prazo_s):
+        """Lê até chegar uma linha que aceitar(linha) aprove e devolve essa LinhaSerial.
+
+        As outras linhas são descartadas, inclusive $DAT com checksum errado. Devolve
+        None se o prazo acabar e lança ConexaoInterrompidaError se o operador desconectar
+        ou a aplicação fechar durante a espera.
+        """
+        limite = time.monotonic() + prazo_s
+        while True:
+            while self._pendentes:
+                texto = self._pendentes.popleft()
+                try:
+                    linha = interpretar_linha(texto)
+                except ProtocoloError:
+                    continue
+                if aceitar(linha):
+                    return linha
+            if self._interrompido():
+                raise ConexaoInterrompidaError()
+            if time.monotonic() >= limite:
+                return None
+            self._ler_linhas()
+
+    def _escrever(self, comando):
+        self._porta.write(comando.encode("ascii"))
+
+    # ------------------------------------------------------------------
+    # Desconexão
+    # ------------------------------------------------------------------
 
     def _desconectar(self, motivo):
         self._mudar_estado(DESCONECTANDO, self._nome_porta)

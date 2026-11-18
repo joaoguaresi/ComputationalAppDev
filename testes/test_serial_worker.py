@@ -14,6 +14,7 @@ from PySide6.QtCore import QCoreApplication
 from controllers.serial_controller import SerialController
 from models.config_manager import ConfigManager
 from models.configuracao_serial import ConfiguracaoSerial
+from models.leitor_linhas import LeitorLinhas
 from testes.placa_simulada import PlacaSimulada
 
 logging.getLogger("smartgrid").addHandler(logging.NullHandler())
@@ -23,6 +24,9 @@ app = QCoreApplication.instance() or QCoreApplication([])
 PORTA = "COM9"
 DESCONECTADO = ConfiguracaoSerial.DESCONECTADO
 CONECTANDO = ConfiguracaoSerial.CONECTANDO
+NEGOCIANDO = ConfiguracaoSerial.NEGOCIANDO
+CALIBRANDO = ConfiguracaoSerial.CALIBRANDO
+CONECTADO = ConfiguracaoSerial.CONECTADO
 
 
 def esperar(condicao, timeout_s=3.0) -> bool:
@@ -47,6 +51,11 @@ class TesteSerial(unittest.TestCase):
 
     def encurtar_tempos(self, worker):
         worker.ESPERA_FILA_S = 0.02
+        worker.TEMPO_BANNER_S = 0.5
+        worker.TEMPO_FIM_BANNER_S = 0.1
+        worker.TEMPO_PRIMEIRA_TELEMETRIA_S = 0.5
+        worker.AMOSTRAS_CALIBRACAO = 10
+        worker.TEMPO_CALIBRACAO_S = 0.3
 
     def setUp(self):
         # Configuração só em memória: o worker lê o config.json, e o de verdade não pode mudar.
@@ -71,6 +80,11 @@ class TesteSerial(unittest.TestCase):
 
     def estados(self):
         return [args[0] for args in self.recebidos("estado_alterado")]
+
+    def conectar(self, taxa=115200):
+        """Faz o handshake completo e espera a telemetria ser liberada."""
+        self.serial.conectar(PORTA, taxa, 1000)
+        self.assertTrue(esperar(lambda: self.serial.estado == CONECTADO), f"estados: {self.estados()}")
 
 
 class TestMaquinaDeEstados(TesteSerial):
@@ -104,7 +118,7 @@ class TestMaquinaDeEstados(TesteSerial):
         self.serial.conectar(PORTA, 115200, 1000)
         self.serial.desconectar()
         self.serial.conectar(PORTA, 115200, 1000)
-        self.assertTrue(esperar(lambda: self.serial.estado == CONECTANDO and self.placa.aberta))
+        self.assertTrue(esperar(lambda: self.serial.estado != DESCONECTADO and self.placa.aberta))
 
     def test_encerrar_termina_a_thread(self):
         self.serial.conectar(PORTA, 115200, 1000)
@@ -112,6 +126,124 @@ class TestMaquinaDeEstados(TesteSerial):
         self.serial.encerrar()
         self.assertFalse(self.serial.thread_serial.isRunning())
         self.assertFalse(self.placa.aberta)
+
+
+class TestBannerEComandoDeTaxa(TesteSerial):
+    def criar_placa(self):
+        # Atraso do bootloader encurtado, mas ainda maior que zero.
+        return PlacaSimulada(atraso_banner_s=0.15)
+
+    def test_espera_o_banner_e_depois_envia_o_comando_de_taxa(self):
+        self.serial.conectar(PORTA, 115200, 1000)
+        self.assertTrue(esperar(lambda: NEGOCIANDO in self.estados()))
+        self.assertEqual(self.placa.comandos[0], "!S115200\n")
+        # Nada é enviado durante o bootloader: o !S vai só depois do banner.
+        self.assertGreaterEqual(self.placa.momentos_comandos[0], self.placa.banner_enviado_em)
+
+
+class TestSemBanner(TesteSerial):
+    def criar_placa(self):
+        return PlacaSimulada(enviar_banner=False)
+
+    def test_sem_banner_o_comando_de_taxa_vai_assim_mesmo(self):
+        self.serial.conectar(PORTA, 115200, 1000)
+        self.assertTrue(esperar(lambda: NEGOCIANDO in self.estados()))
+        self.assertEqual(self.placa.comandos, ["!S115200\n"])
+
+    def test_desconectar_interrompe_a_espera_do_banner(self):
+        self.serial.worker.TEMPO_BANNER_S = 10.0
+        self.serial.conectar(PORTA, 115200, 1000)
+        self.assertTrue(esperar(lambda: self.placa.aberta))
+        inicio = time.monotonic()
+        self.serial.desconectar()
+        self.assertTrue(esperar(lambda: self.recebidos("desconectado"), timeout_s=1.0))
+        self.assertLess(time.monotonic() - inicio, 1.0)
+        self.assertFalse(self.placa.aberta)
+        self.assertEqual(self.placa.comandos, [])
+
+
+class TestAckETrocaDeTaxa(TesteSerial):
+    def test_ack_troca_a_taxa_sem_fechar_a_porta(self):
+        self.conectar()
+        self.assertEqual(self.recebidos("conectado"), [(PORTA, 115200, False)])
+        self.assertEqual(self.placa.baudrate, 115200)
+        # A mesma porta, sem reabrir: reabrir reiniciaria o Uno.
+        self.assertEqual(self.placa.aberturas, 1)
+        self.assertEqual(self.estados()[-4:], [CONECTANDO, NEGOCIANDO, CALIBRANDO, CONECTADO])
+
+    def test_as_quatro_taxas(self):
+        for taxa in (9600, 19200, 38400, 115200):
+            with self.subTest(taxa=taxa):
+                self.conectar(taxa)
+                self.assertEqual(self.placa.comandos[-1], f"!S{taxa}\n")
+                self.assertEqual(self.placa.baudrate, taxa)
+                self.serial.desconectar()
+                self.assertTrue(esperar(lambda: self.serial.estado == DESCONECTADO))
+
+    def test_err_da_placa_vira_falha_e_fecha_a_porta(self):
+        self.placa.recusar_taxa = True
+        self.serial.conectar(PORTA, 115200, 1000)
+        self.assertTrue(esperar(lambda: self.recebidos("falha_conexao")))
+        self.assertIn("recusou", self.recebidos("falha_conexao")[0][0])
+        self.assertFalse(self.placa.aberta)
+        self.assertEqual(self.serial.estado, DESCONECTADO)
+
+    def test_placa_que_nao_responde_ao_comando_de_taxa(self):
+        self.placa.responder_taxa = False
+        self.serial.conectar(PORTA, 115200, 200)
+        self.assertTrue(esperar(lambda: self.recebidos("falha_conexao")))
+        self.assertIn("não respondeu", self.recebidos("falha_conexao")[0][0])
+
+    def test_ack_sem_telemetria_vira_falha(self):
+        self.placa.transmitir_apos_ack = False
+        self.serial.conectar(PORTA, 115200, 1000)
+        self.assertTrue(esperar(lambda: self.recebidos("falha_conexao")))
+        self.assertIn("telemetria não chegou", self.recebidos("falha_conexao")[0][0])
+
+
+class TestCalibracaoDoZero(TesteSerial):
+    def test_calibra_o_zero_com_o_rele_desligado(self):
+        self.placa.a1 = 520
+        self.conectar()
+        self.assertAlmostEqual(self.serial.worker._calibracao.zero_corrente_adc, 520.0)
+
+    def test_zero_longe_do_meio_da_escala_e_descartado(self):
+        self.placa.a1 = 700
+        self.conectar()
+        self.assertAlmostEqual(self.serial.worker._calibracao.zero_corrente_adc, 512.0)
+
+    def test_calibracao_desligada_no_config(self):
+        ConfigManager._dados["calibrar_zero_corrente"] = False
+        self.placa.a1 = 520
+        self.conectar()
+        self.assertAlmostEqual(self.serial.worker._calibracao.zero_corrente_adc, 512.0)
+
+    def test_rele_ligado_mantem_o_zero_do_config(self):
+        self.placa.rele_ao_ligar = 1
+        self.placa.a1 = 520
+        self.conectar()
+        self.assertAlmostEqual(self.serial.worker._calibracao.zero_corrente_adc, 512.0)
+
+
+class TestLeitorLinhas(unittest.TestCase):
+    def test_pacote_partido_em_dois_pedacos(self):
+        leitor = LeitorLinhas()
+        self.assertEqual(leitor.adicionar(b"$DAT,512,7"), [])
+        self.assertEqual(leitor.adicionar(b"16,1,0*56\r\n$DAT"), ["$DAT,512,716,1,0*56"])
+
+    def test_varias_linhas_num_pedaco(self):
+        leitor = LeitorLinhas()
+        linhas = leitor.adicionar(b"PLACA EM ESPERA (9600 baud)\r\nEnvie !P\r\n")
+        self.assertEqual(linhas, ["PLACA EM ESPERA (9600 baud)", "Envie !P"])
+
+    def test_lixo_sem_quebra_de_linha_e_descartado(self):
+        leitor = LeitorLinhas(tamanho_maximo=16)
+        self.assertEqual(leitor.adicionar(b"\xf0" * 20), [])
+        self.assertEqual(leitor.descartados, 1)
+        self.assertEqual(leitor.adicionar(b"$DAT\n"), ["$DAT"])
+
+    def test_byte_que_nao_e_ascii_vira_caractere_de_substituicao(self):
+        self.assertEqual(LeitorLinhas().adicionar(b"\xf0$DAT\n"), ["�$DAT"])
 
 
 if __name__ == "__main__":
