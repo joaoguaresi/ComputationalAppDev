@@ -225,6 +225,61 @@ class TestCalibracaoDoZero(TesteSerial):
         self.assertAlmostEqual(self.serial.worker._calibracao.zero_corrente_adc, 512.0)
 
 
+class TestTelemetria(TesteSerial):
+    SINAIS = TesteSerial.SINAIS + ("leituras_recebidas", "conexao_perdida")
+
+    def encurtar_tempos(self, worker):
+        super().encurtar_tempos(worker)
+        worker.TEMPO_SILENCIO_S = 0.3
+
+    def leituras(self):
+        return [leitura for (lote,) in self.recebidos("leituras_recebidas") for leitura in lote]
+
+    def test_leituras_chegam_em_lote_ja_convertidas(self):
+        self.placa.a0 = 1023
+        self.conectar()
+        self.assertTrue(esperar(lambda: len(self.recebidos("leituras_recebidas")) >= 3))
+        lote = self.recebidos("leituras_recebidas")[1][0]
+        # Uns 20 pacotes por lote a 200 Hz, nunca um sinal por pacote.
+        self.assertGreater(len(lote), 5)
+        self.assertAlmostEqual(lote[-1].tensao_v, 12.0)
+        self.assertAlmostEqual(lote[-1].corrente_a, 0.0)
+        self.assertEqual(lote[-1].a0, 1023)
+
+    def test_pacotes_invalidos_sao_descartados_sem_parar_a_telemetria(self):
+        self.conectar()
+        for _ in range(5):
+            self.placa.injetar("$DAT,512,717,1,0*56")  # um caractere trocado: checksum errado
+        self.placa.injetar("ruido qualquer")
+        self.assertTrue(esperar(lambda: self.serial.worker.total_descartados >= 6))
+        quantas = len(self.leituras())
+        self.assertTrue(esperar(lambda: len(self.leituras()) > quantas + 20))
+        self.assertEqual(self.serial.estado, CONECTADO)
+
+    def test_media_movel_suaviza_a_corrente(self):
+        self.conectar()
+        self.assertTrue(esperar(lambda: self.leituras()))
+        self.placa.a1 = 612  # 100 contagens acima do zero: 7,4 A
+        self.assertTrue(esperar(lambda: abs(self.leituras()[-1].corrente_a - 7.405) < 0.01))
+        intermediarias = [leitura.corrente_a for leitura in self.leituras() if 0.1 < leitura.corrente_a < 7.3]
+        self.assertTrue(intermediarias, "a corrente pulou direto para 7,4 A, sem média móvel")
+
+    def test_watchdog_de_silencio_derruba_a_conexao(self):
+        self.conectar()
+        self.placa.silenciar()
+        self.assertTrue(esperar(lambda: self.recebidos("conexao_perdida")))
+        self.assertIn("nenhum pacote válido", self.recebidos("conexao_perdida")[0][0])
+        self.assertFalse(self.placa.aberta)
+        self.assertEqual(self.serial.estado, DESCONECTADO)
+
+    def test_erro_na_porta_vira_conexao_perdida(self):
+        self.conectar()
+        self.placa.puxar_cabo()
+        self.assertTrue(esperar(lambda: self.recebidos("conexao_perdida")))
+        self.assertIn("erro na porta serial", self.recebidos("conexao_perdida")[0][0])
+        self.assertEqual(self.serial.estado, DESCONECTADO)
+
+
 class TestLeitorLinhas(unittest.TestCase):
     def test_pacote_partido_em_dois_pedacos(self):
         leitor = LeitorLinhas()

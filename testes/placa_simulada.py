@@ -95,11 +95,13 @@ class PlacaSimulada:
 
     @property
     def in_waiting(self):
+        self._conferir_cabo()
         with self._trava:
             self._gerar()
             return sum(len(pedaco) for _, pedaco in self._saida)
 
     def read(self, tamanho=1):
+        self._conferir_cabo()
         limite = time.monotonic() + self.timeout
         while time.monotonic() < limite:
             with self._trava:
@@ -110,6 +112,7 @@ class PlacaSimulada:
         return b""
 
     def write(self, dados):
+        self._conferir_cabo()
         texto = dados.decode("ascii")
         with self._trava:
             self.comandos.append(texto)
@@ -125,6 +128,11 @@ class PlacaSimulada:
     def close(self):
         self.aberta = False
 
+    def _conferir_cabo(self):
+        # Mensagem igual à do pyserial no Windows quando o USB é puxado.
+        if not self.cabo_conectado:
+            raise serial.SerialException("ClearCommError failed (PermissionError(13, 'O dispositivo não reconhece o comando.'))")
+
     # ------------------------------------------------------------------
     # Ações dos testes
     # ------------------------------------------------------------------
@@ -134,6 +142,16 @@ class PlacaSimulada:
 
     def religar_cabo(self):
         self.cabo_conectado = True
+
+    def silenciar(self):
+        """A placa trava: a porta continua aberta, mas nada mais chega."""
+        with self._trava:
+            self.transmitindo = False
+
+    def injetar(self, texto):
+        """Coloca uma linha qualquer no fio, por exemplo um pacote com checksum errado."""
+        with self._trava:
+            self._enviar(texto)
 
     # ------------------------------------------------------------------
     # Firmware: resposta aos comandos

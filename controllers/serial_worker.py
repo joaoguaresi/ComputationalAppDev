@@ -10,7 +10,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 from models.config_manager import ConfigManager
 from models.configuracao_serial import ConfiguracaoSerial
 from models.leitor_linhas import LeitorLinhas
-from models.leitura_telemetria import Calibracao
+from models.leitura_telemetria import Calibracao, LeituraTelemetria, MediaMovel
 from models.protocolo import (
     TAXA_INICIAL,
     LinhaSerial,
@@ -96,6 +96,15 @@ class SerialWorker(QObject):
     TEMPO_PRIMEIRA_TELEMETRIA_S = 2.0
     AMOSTRAS_CALIBRACAO = 100
     TEMPO_CALIBRACAO_S = 1.0
+    # Telemetria: as leituras saem em lotes (uns 20 pacotes a 200 Hz), para a interface
+    # não receber 200 sinais por segundo.
+    INTERVALO_LOTE_S = 0.1
+    # Watchdog: a placa manda 200 pacotes por segundo; 2 s sem nenhum válido é falha.
+    TEMPO_SILENCIO_S = 2.0
+    # Pacotes inválidos vão para o log resumidos, no máximo uma linha nesse intervalo.
+    INTERVALO_AVISO_DESCARTE_S = 10.0
+    # Média móvel da corrente: 10 amostras são 50 ms a 200 Hz.
+    JANELA_MEDIA_CORRENTE = 10
 
     _CONECTAR = "CONECTAR"
     _DESCONECTAR = "DESCONECTAR"
@@ -105,6 +114,8 @@ class SerialWorker(QObject):
     conectado = Signal(str, int, bool)  # porta, taxa e se foi uma reconexão automática
     desconectado = Signal(str)          # motivo
     falha_conexao = Signal(str)         # motivo
+    conexao_perdida = Signal(str)       # motivo
+    leituras_recebidas = Signal(list)   # lote de LeituraTelemetria
 
     def __init__(self, abrir_porta=abrir_porta_serial, listar_portas=ConfiguracaoSerial.listar_portas):
         # Sem pai: o moveToThread não aceita um objeto que tem pai.
@@ -125,6 +136,15 @@ class SerialWorker(QObject):
 
         self._leitor = LeitorLinhas()
         self._pendentes = deque()  # linhas já lidas da porta e ainda não tratadas
+
+        self._lote = []
+        self._inicio_lote = 0.0
+        self._ultimo_pacote = 0.0
+        self._media_corrente = MediaMovel(self.JANELA_MEDIA_CORRENTE)
+        self._descartados = 0
+        self.total_descartados = 0
+        self._ultimo_descarte = ""
+        self._proximo_aviso_descarte = 0.0
 
         self._portas = None
         self._proxima_listagem = 0.0
@@ -172,9 +192,27 @@ class SerialWorker(QObject):
         self._atender(comando)
 
     def _ciclo_conectado(self):
-        """Com a porta aberta: atende os pedidos que chegaram."""
-        self._atender_fila()
-        self._parar.wait(self.TIMEOUT_LEITURA_S)
+        """Telemetria: atende a fila, lê os pacotes, entrega os lotes e vigia o silêncio."""
+        try:
+            self._atender_fila()
+            if self.estado != CONECTADO:
+                return
+            self._ler_linhas()
+        except (serial.SerialException, OSError) as erro:
+            self._perder_conexao(f"erro na porta serial ({erro})")
+            return
+
+        agora = time.monotonic()
+        while self._pendentes and self.estado == CONECTADO:
+            self._tratar_linha(self._pendentes.popleft(), agora)
+        if self.estado != CONECTADO:
+            return
+
+        if agora - self._inicio_lote >= self.INTERVALO_LOTE_S:
+            self._emitir_lote()
+        self._avisar_descartes(agora)
+        if agora - self._ultimo_pacote >= self.TEMPO_SILENCIO_S:
+            self._perder_conexao(f"nenhum pacote válido em {self.TEMPO_SILENCIO_S:.0f} s")
 
     def _atender_fila(self):
         """Atende, sem esperar, todos os pedidos que já estão na fila."""
@@ -234,6 +272,7 @@ class SerialWorker(QObject):
             self._mudar_estado(DESCONECTADO)
             self.falha_conexao.emit(str(erro))
         else:
+            self._iniciar_telemetria()
             self._mudar_estado(CONECTADO, f"{porta} @ {taxa} bps")
             logger.info("Conectado à placa em %s a %d bps: telemetria liberada.", porta, taxa)
             self.conectado.emit(porta, taxa, False)
@@ -364,6 +403,78 @@ class SerialWorker(QObject):
         return f"não foi possível abrir a porta - {texto}"
 
     # ------------------------------------------------------------------
+    # Telemetria
+    # ------------------------------------------------------------------
+
+    def _iniciar_telemetria(self):
+        agora = time.monotonic()
+        self._lote = []
+        self._inicio_lote = agora
+        self._ultimo_pacote = agora
+        self._media_corrente.limpar()
+        self._descartados = 0
+        self._proximo_aviso_descarte = agora + self.INTERVALO_AVISO_DESCARTE_S
+
+    def _tratar_linha(self, texto, agora):
+        try:
+            linha = interpretar_linha(texto)
+        except ProtocoloError as erro:
+            # Checksum errado, campo faltando ou valor fora da faixa: o pacote é descartado.
+            self._contar_descarte(str(erro))
+            return
+
+        if linha.tipo == LinhaSerial.DADOS:
+            self._receber_dados(linha.valor, agora)
+        elif linha.tipo in (LinhaSerial.BANNER, LinhaSerial.ACK_PAUSA):
+            # A placa voltou sozinha ao modo de espera (botão de reset, queda de alimentação).
+            self._perder_conexao(f"a placa voltou ao modo de espera ('{linha.texto}')")
+        elif linha.tipo == LinhaSerial.DESCONHECIDA:
+            self._contar_descarte(f"linha fora do protocolo: {texto!r}")
+        elif linha.tipo not in (LinhaSerial.VAZIA, LinhaSerial.INFORMATIVA):
+            logger.info("Placa em %s respondeu: '%s'.", self._nome_porta, linha.texto)
+
+    def _receber_dados(self, campos, agora):
+        """Converte um $DAT válido em LeituraTelemetria e o guarda no lote."""
+        self._ultimo_pacote = agora
+        leitura = LeituraTelemetria.de_pacote(campos, self._calibracao)
+        # Média móvel só na corrente: uma contagem do ADC vale uns 74 mA, e o ruído do
+        # ACS712 faria o mostrador e o alarme tremerem.
+        leitura.corrente_a = self._media_corrente.adicionar(leitura.corrente_a)
+        self._lote.append(leitura)
+
+    def _emitir_lote(self):
+        """Entrega à interface (e, por ela, ao banco) as leituras juntadas desde o último lote."""
+        if self._lote:
+            lote, self._lote = self._lote, []
+            self.leituras_recebidas.emit(lote)
+        self._inicio_lote = time.monotonic()
+
+    def _contar_descarte(self, motivo):
+        self._descartados += 1
+        self.total_descartados += 1
+        self._ultimo_descarte = motivo
+
+    def _avisar_descartes(self, agora):
+        """Resume os descartados no log: a 200 pacotes por segundo, uma linha por pacote inundaria o arquivo."""
+        if agora < self._proximo_aviso_descarte:
+            return
+        self._proximo_aviso_descarte = agora + self.INTERVALO_AVISO_DESCARTE_S
+        if self._descartados:
+            logger.warning(
+                "%d pacote(s) inválido(s) da placa descartado(s) nos últimos %.0f s. Último: %s",
+                self._descartados, self.INTERVALO_AVISO_DESCARTE_S, self._ultimo_descarte,
+            )
+            self._descartados = 0
+
+    def _perder_conexao(self, motivo):
+        """A placa parou de responder: cabo puxado, placa reiniciada ou travada."""
+        logger.warning("Conexão com a placa em %s perdida: %s.", self._nome_porta, motivo)
+        self._emitir_lote()
+        self._fechar_porta()
+        self._mudar_estado(DESCONECTADO)
+        self.conexao_perdida.emit(motivo)
+
+    # ------------------------------------------------------------------
     # Leitura e escrita na porta
     # ------------------------------------------------------------------
 
@@ -405,6 +516,7 @@ class SerialWorker(QObject):
 
     def _desconectar(self, motivo):
         self._mudar_estado(DESCONECTANDO, self._nome_porta)
+        self._emitir_lote()
         self._fechar_porta()
         logger.info("Conexão com a placa em %s encerrada %s.", self._nome_porta, motivo)
         self._mudar_estado(DESCONECTADO)

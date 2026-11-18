@@ -22,6 +22,8 @@ class SerialController(QObject):
     conectado = Signal(str, int, bool)
     desconectado = Signal(str)
     falha_conexao = Signal(str)
+    conexao_perdida = Signal(str)
+    leituras_recebidas = Signal(list)
 
     def __init__(self, parent=None, **opcoes_worker):
         """opcoes_worker vai para o SerialWorker; os testes passam uma placa simulada."""
@@ -47,6 +49,8 @@ class SerialController(QObject):
         self.worker.conectado.connect(self.conectado)
         self.worker.desconectado.connect(self.desconectado)
         self.worker.falha_conexao.connect(self.falha_conexao)
+        self.worker.conexao_perdida.connect(self.conexao_perdida)
+        self.worker.leituras_recebidas.connect(self.leituras_recebidas)
 
     def _guardar_estado(self, estado, _detalhe):
         self.estado = estado
