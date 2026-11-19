@@ -1,3 +1,12 @@
+# -*- coding: utf-8 -*-
+
+################################################################################
+## Form generated from reading UI file 'main_window.ui'
+##
+## Created by: Qt User Interface Compiler version 6.11.1
+##
+## WARNING! All changes made in this file will be lost when recompiling UI file!
+################################################################################
 
 from PySide6.QtCore import (QCoreApplication, QDate, QDateTime, QLocale,
     QMetaObject, QObject, QPoint, QRect,
@@ -6,10 +15,12 @@ from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QCursor,
     QFont, QFontDatabase, QGradient, QIcon,
     QImage, QKeySequence, QLinearGradient, QPainter,
     QPalette, QPixmap, QRadialGradient, QTransform)
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDoubleSpinBox, QGridLayout,
-    QGroupBox, QHBoxLayout, QHeaderView, QLCDNumber, QLabel,
-    QMainWindow, QPushButton, QSizePolicy, QSlider,
-    QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDateTimeEdit,
+    QDoubleSpinBox, QFrame, QGridLayout, QGroupBox,
+    QHBoxLayout, QHeaderView, QLCDNumber, QLabel,
+    QMainWindow, QPushButton, QRadioButton, QSizePolicy,
+    QSlider, QSpacerItem, QSpinBox, QTableWidget,
+    QTableWidgetItem, QVBoxLayout, QWidget)
 
 from pyqtgraph import PlotWidget
 
@@ -120,21 +131,21 @@ class Ui_JanelaPrincipal(object):
 
         self.spin_setpoint = QDoubleSpinBox(self.group_comandos)
         self.spin_setpoint.setObjectName(u"spin_setpoint")
-        self.spin_setpoint.setMinimum(100.000000000000000)
-        self.spin_setpoint.setMaximum(10000.000000000000000)
-        self.spin_setpoint.setSingleStep(50.000000000000000)
+        self.spin_setpoint.setMinimum(10.000000000000000)
+        self.spin_setpoint.setMaximum(360.000000000000000)
+        self.spin_setpoint.setSingleStep(10.000000000000000)
         self.spin_setpoint.setDecimals(1)
-        self.spin_setpoint.setValue(2000.000000000000000)
+        self.spin_setpoint.setValue(250.000000000000000)
 
         self.grid_comandos.addWidget(self.spin_setpoint, 0, 1, 1, 1)
 
         self.slider_setpoint = QSlider(self.group_comandos)
         self.slider_setpoint.setObjectName(u"slider_setpoint")
-        self.slider_setpoint.setMinimum(100)
-        self.slider_setpoint.setMaximum(10000)
-        self.slider_setpoint.setSingleStep(50)
-        self.slider_setpoint.setPageStep(250)
-        self.slider_setpoint.setValue(2000)
+        self.slider_setpoint.setMinimum(10)
+        self.slider_setpoint.setMaximum(360)
+        self.slider_setpoint.setSingleStep(10)
+        self.slider_setpoint.setPageStep(50)
+        self.slider_setpoint.setValue(250)
         self.slider_setpoint.setOrientation(Qt.Horizontal)
 
         self.grid_comandos.addWidget(self.slider_setpoint, 1, 0, 1, 2)
@@ -252,6 +263,104 @@ class Ui_JanelaPrincipal(object):
         self.group_grafico.setObjectName(u"group_grafico")
         self.layout_grafico = QVBoxLayout(self.group_grafico)
         self.layout_grafico.setObjectName(u"layout_grafico")
+        self.layout_controles_grafico = QHBoxLayout()
+        self.layout_controles_grafico.setSpacing(8)
+        self.layout_controles_grafico.setObjectName(u"layout_controles_grafico")
+        self.label_modo_grafico = QLabel(self.group_grafico)
+        self.label_modo_grafico.setObjectName(u"label_modo_grafico")
+        self.label_modo_grafico.setStyleSheet(u"font-weight: bold;")
+
+        self.layout_controles_grafico.addWidget(self.label_modo_grafico)
+
+        self.radio_tempo_real = QRadioButton(self.group_grafico)
+        self.radio_tempo_real.setObjectName(u"radio_tempo_real")
+        self.radio_tempo_real.setChecked(True)
+
+        self.layout_controles_grafico.addWidget(self.radio_tempo_real)
+
+        self.radio_historico = QRadioButton(self.group_grafico)
+        self.radio_historico.setObjectName(u"radio_historico")
+
+        self.layout_controles_grafico.addWidget(self.radio_historico)
+
+        self.linha_separador_grafico = QFrame(self.group_grafico)
+        self.linha_separador_grafico.setObjectName(u"linha_separador_grafico")
+        self.linha_separador_grafico.setFrameShape(QFrame.Shape.VLine)
+        self.linha_separador_grafico.setFrameShadow(QFrame.Shadow.Sunken)
+
+        self.layout_controles_grafico.addWidget(self.linha_separador_grafico)
+
+        self.widget_filtros = QWidget(self.group_grafico)
+        self.widget_filtros.setObjectName(u"widget_filtros")
+        self.widget_filtros.setEnabled(False)
+        self.layout_filtros = QHBoxLayout(self.widget_filtros)
+        self.layout_filtros.setSpacing(6)
+        self.layout_filtros.setObjectName(u"layout_filtros")
+        self.layout_filtros.setContentsMargins(0, 0, 0, 0)
+        self.radio_ultimas = QRadioButton(self.widget_filtros)
+        self.radio_ultimas.setObjectName(u"radio_ultimas")
+        self.radio_ultimas.setChecked(True)
+
+        self.layout_filtros.addWidget(self.radio_ultimas)
+
+        self.spin_quantidade = QSpinBox(self.widget_filtros)
+        self.spin_quantidade.setObjectName(u"spin_quantidade")
+        self.spin_quantidade.setMinimumSize(QSize(120, 0))
+        self.spin_quantidade.setMinimum(1)
+        self.spin_quantidade.setMaximum(10000)
+        self.spin_quantidade.setSingleStep(100)
+        self.spin_quantidade.setValue(500)
+
+        self.layout_filtros.addWidget(self.spin_quantidade)
+
+        self.radio_intervalo = QRadioButton(self.widget_filtros)
+        self.radio_intervalo.setObjectName(u"radio_intervalo")
+
+        self.layout_filtros.addWidget(self.radio_intervalo)
+
+        self.datetime_inicio = QDateTimeEdit(self.widget_filtros)
+        self.datetime_inicio.setObjectName(u"datetime_inicio")
+        self.datetime_inicio.setMinimumSize(QSize(165, 0))
+        self.datetime_inicio.setEnabled(False)
+        self.datetime_inicio.setCalendarPopup(True)
+
+        self.layout_filtros.addWidget(self.datetime_inicio)
+
+        self.label_ate = QLabel(self.widget_filtros)
+        self.label_ate.setObjectName(u"label_ate")
+
+        self.layout_filtros.addWidget(self.label_ate)
+
+        self.datetime_fim = QDateTimeEdit(self.widget_filtros)
+        self.datetime_fim.setObjectName(u"datetime_fim")
+        self.datetime_fim.setMinimumSize(QSize(165, 0))
+        self.datetime_fim.setEnabled(False)
+        self.datetime_fim.setCalendarPopup(True)
+
+        self.layout_filtros.addWidget(self.datetime_fim)
+
+        self.btn_consultar = QPushButton(self.widget_filtros)
+        self.btn_consultar.setObjectName(u"btn_consultar")
+        self.btn_consultar.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+
+        self.layout_filtros.addWidget(self.btn_consultar)
+
+
+        self.layout_controles_grafico.addWidget(self.widget_filtros)
+
+        self.espacador_grafico = QSpacerItem(20, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+
+        self.layout_controles_grafico.addItem(self.espacador_grafico)
+
+        self.label_status_grafico = QLabel(self.group_grafico)
+        self.label_status_grafico.setObjectName(u"label_status_grafico")
+        self.label_status_grafico.setAlignment(Qt.AlignRight|Qt.AlignVCenter)
+
+        self.layout_controles_grafico.addWidget(self.label_status_grafico)
+
+
+        self.layout_grafico.addLayout(self.layout_controles_grafico)
+
         self.grafico_tendencia = PlotWidget(self.group_grafico)
         self.grafico_tendencia.setObjectName(u"grafico_tendencia")
 
@@ -265,16 +374,23 @@ class Ui_JanelaPrincipal(object):
         self.layout_historico = QVBoxLayout(self.group_historico)
         self.layout_historico.setObjectName(u"layout_historico")
         self.tabela_historico = QTableWidget(self.group_historico)
+        if (self.tabela_historico.columnCount() < 4):
+            self.tabela_historico.setColumnCount(4)
+        __qtablewidgetitem = QTableWidgetItem()
+        self.tabela_historico.setHorizontalHeaderItem(0, __qtablewidgetitem)
+        __qtablewidgetitem1 = QTableWidgetItem()
+        self.tabela_historico.setHorizontalHeaderItem(1, __qtablewidgetitem1)
+        __qtablewidgetitem2 = QTableWidgetItem()
+        self.tabela_historico.setHorizontalHeaderItem(2, __qtablewidgetitem2)
+        __qtablewidgetitem3 = QTableWidgetItem()
+        self.tabela_historico.setHorizontalHeaderItem(3, __qtablewidgetitem3)
         self.tabela_historico.setObjectName(u"tabela_historico")
-        self.tabela_historico.setColumnCount(4)
-        self.tabela_historico.setHorizontalHeaderLabels(["Data/Hora", "Tipo de Evento", "Descrição", "Valor Medido"])
-        self.tabela_historico.horizontalHeader().setStretchLastSection(True)
-        self.tabela_historico.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.tabela_historico.setMinimumSize(QSize(0, 180))
         self.tabela_historico.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tabela_historico.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.tabela_historico.setMinimumSize(QSize(0, 180))
 
         self.layout_historico.addWidget(self.tabela_historico)
+
 
         self.layout_principal.addWidget(self.group_historico)
 
@@ -297,7 +413,7 @@ class Ui_JanelaPrincipal(object):
         self.label_setpoint.setText(QCoreApplication.translate("JanelaPrincipal", u"Setpoint de pot\u00eancia", None))
         self.spin_setpoint.setSuffix(QCoreApplication.translate("JanelaPrincipal", u" W", None))
 #if QT_CONFIG(tooltip)
-        self.spin_setpoint.setToolTip(QCoreApplication.translate("JanelaPrincipal", u"Limite m\u00e1ximo de pot\u00eancia monitorado pela prote\u00e7\u00e3o local", None))
+        self.spin_setpoint.setToolTip(QCoreApplication.translate("JanelaPrincipal", u"Limite m\u00e1ximo de pot\u00eancia monitorado pela prote\u00e7\u00e3o local (bancada: at\u00e9 12 V x 30 A = 360 W)", None))
 #endif // QT_CONFIG(tooltip)
         self.label_alerta_status.setText(QCoreApplication.translate("JanelaPrincipal", u"Prote\u00e7\u00e3o: dentro do limite", None))
         self.btn_corte_emergencia.setText(QCoreApplication.translate("JanelaPrincipal", u"CORTE DE EMERG\u00caNCIA", None))
@@ -312,6 +428,34 @@ class Ui_JanelaPrincipal(object):
         self.btn_desconectar.setText(QCoreApplication.translate("JanelaPrincipal", u"Desconectar", None))
         self.label_serial_status.setText(QCoreApplication.translate("JanelaPrincipal", u"DESCONECTADO", None))
         self.group_grafico.setTitle(QCoreApplication.translate("JanelaPrincipal", u"Gr\u00e1fico de Tend\u00eancia", None))
+        self.label_modo_grafico.setText(QCoreApplication.translate("JanelaPrincipal", u"Modo:", None))
+        self.radio_tempo_real.setText(QCoreApplication.translate("JanelaPrincipal", u"Tempo real", None))
+#if QT_CONFIG(tooltip)
+        self.radio_tempo_real.setToolTip(QCoreApplication.translate("JanelaPrincipal", u"Curva da telemetria da placa, atualizada a cada lote de leituras", None))
+#endif // QT_CONFIG(tooltip)
+        self.radio_historico.setText(QCoreApplication.translate("JanelaPrincipal", u"Hist\u00f3rico", None))
+#if QT_CONFIG(tooltip)
+        self.radio_historico.setToolTip(QCoreApplication.translate("JanelaPrincipal", u"Curva das leituras gravadas no banco, pelo filtro ao lado", None))
+#endif // QT_CONFIG(tooltip)
+        self.radio_ultimas.setText(QCoreApplication.translate("JanelaPrincipal", u"\u00daltimas", None))
+        self.spin_quantidade.setSuffix(QCoreApplication.translate("JanelaPrincipal", u" leituras", None))
+#if QT_CONFIG(tooltip)
+        self.spin_quantidade.setToolTip(QCoreApplication.translate("JanelaPrincipal", u"Quantidade de leituras gravadas (cada uma \u00e9 a m\u00e9dia de uma janela de taxa_amostragem_ms)", None))
+#endif // QT_CONFIG(tooltip)
+        self.radio_intervalo.setText(QCoreApplication.translate("JanelaPrincipal", u"De", None))
+        self.datetime_inicio.setDisplayFormat(QCoreApplication.translate("JanelaPrincipal", u"dd/MM/yyyy HH:mm:ss", None))
+        self.label_ate.setText(QCoreApplication.translate("JanelaPrincipal", u"at\u00e9", None))
+        self.datetime_fim.setDisplayFormat(QCoreApplication.translate("JanelaPrincipal", u"dd/MM/yyyy HH:mm:ss", None))
+        self.btn_consultar.setText(QCoreApplication.translate("JanelaPrincipal", u"Consultar", None))
+        self.label_status_grafico.setText(QCoreApplication.translate("JanelaPrincipal", u"Tempo real: aguardando a placa", None))
         self.group_historico.setTitle(QCoreApplication.translate("JanelaPrincipal", u"Hist\u00f3rico de Eventos", None))
+        ___qtablewidgetitem = self.tabela_historico.horizontalHeaderItem(0)
+        ___qtablewidgetitem.setText(QCoreApplication.translate("JanelaPrincipal", u"Data/Hora", None))
+        ___qtablewidgetitem1 = self.tabela_historico.horizontalHeaderItem(1)
+        ___qtablewidgetitem1.setText(QCoreApplication.translate("JanelaPrincipal", u"Tipo de Evento", None))
+        ___qtablewidgetitem2 = self.tabela_historico.horizontalHeaderItem(2)
+        ___qtablewidgetitem2.setText(QCoreApplication.translate("JanelaPrincipal", u"Descri\u00e7\u00e3o", None))
+        ___qtablewidgetitem3 = self.tabela_historico.horizontalHeaderItem(3)
+        ___qtablewidgetitem3.setText(QCoreApplication.translate("JanelaPrincipal", u"Valor Medido", None))
     # retranslateUi
 

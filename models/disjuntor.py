@@ -15,6 +15,11 @@ class Disjuntor:
             ultima_alteracao = datetime.now()
         self.ultima_alteracao = ultima_alteracao
 
+    def restaurar(self, estado, ultima_alteracao):
+        """Volta ao estado gravado no banco, com a data da última alteração gravada."""
+        self.estado = estado
+        self.ultima_alteracao = ultima_alteracao
+
     def abrir(self):
         self.estado = Disjuntor.ABERTO
         self.ultima_alteracao = datetime.now()

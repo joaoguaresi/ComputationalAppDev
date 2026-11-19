@@ -208,44 +208,44 @@
          <item row="0" column="1">
           <widget class="QDoubleSpinBox" name="spin_setpoint">
            <property name="minimum">
-            <double>100.000000000000000</double>
+            <double>10.000000000000000</double>
            </property>
            <property name="maximum">
-            <double>10000.000000000000000</double>
+            <double>360.000000000000000</double>
            </property>
            <property name="singleStep">
-            <double>50.000000000000000</double>
+            <double>10.000000000000000</double>
            </property>
            <property name="decimals">
             <number>1</number>
            </property>
            <property name="value">
-            <double>2000.000000000000000</double>
+            <double>250.000000000000000</double>
            </property>
            <property name="suffix">
             <string> W</string>
            </property>
            <property name="toolTip">
-            <string>Limite máximo de potência monitorado pela proteção local</string>
+            <string>Limite máximo de potência monitorado pela proteção local (bancada: até 12 V x 30 A = 360 W)</string>
            </property>
           </widget>
          </item>
          <item row="1" column="0" colspan="2">
           <widget class="QSlider" name="slider_setpoint">
            <property name="minimum">
-            <number>100</number>
+            <number>10</number>
            </property>
            <property name="maximum">
-            <number>10000</number>
+            <number>360</number>
            </property>
            <property name="singleStep">
-            <number>50</number>
+            <number>10</number>
            </property>
            <property name="pageStep">
-            <number>250</number>
+            <number>50</number>
            </property>
            <property name="value">
-            <number>2000</number>
+            <number>250</number>
            </property>
            <property name="orientation">
             <enum>Qt::Horizontal</enum>
@@ -465,6 +465,200 @@ QPushButton:disabled { background-color: #95A5A6; }</string>
        <string>Gráfico de Tendência</string>
       </property>
       <layout class="QVBoxLayout" name="layout_grafico">
+       <item>
+        <layout class="QHBoxLayout" name="layout_controles_grafico">
+         <property name="spacing">
+          <number>8</number>
+         </property>
+         <item>
+          <widget class="QLabel" name="label_modo_grafico">
+           <property name="text">
+            <string>Modo:</string>
+           </property>
+           <property name="styleSheet">
+            <string notr="true">font-weight: bold;</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QRadioButton" name="radio_tempo_real">
+           <property name="text">
+            <string>Tempo real</string>
+           </property>
+           <property name="checked">
+            <bool>true</bool>
+           </property>
+           <property name="toolTip">
+            <string>Curva da telemetria da placa, atualizada a cada lote de leituras</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QRadioButton" name="radio_historico">
+           <property name="text">
+            <string>Histórico</string>
+           </property>
+           <property name="toolTip">
+            <string>Curva das leituras gravadas no banco, pelo filtro ao lado</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="Line" name="linha_separador_grafico">
+           <property name="orientation">
+            <enum>Qt::Vertical</enum>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QWidget" name="widget_filtros" native="true">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <layout class="QHBoxLayout" name="layout_filtros">
+            <property name="spacing">
+             <number>6</number>
+            </property>
+            <property name="leftMargin">
+             <number>0</number>
+            </property>
+            <property name="topMargin">
+             <number>0</number>
+            </property>
+            <property name="rightMargin">
+             <number>0</number>
+            </property>
+            <property name="bottomMargin">
+             <number>0</number>
+            </property>
+            <item>
+             <widget class="QRadioButton" name="radio_ultimas">
+              <property name="text">
+               <string>Últimas</string>
+              </property>
+              <property name="checked">
+               <bool>true</bool>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QSpinBox" name="spin_quantidade">
+              <property name="minimumSize">
+               <size>
+                <width>120</width>
+                <height>0</height>
+               </size>
+              </property>
+              <property name="minimum">
+               <number>1</number>
+              </property>
+              <property name="maximum">
+               <number>10000</number>
+              </property>
+              <property name="singleStep">
+               <number>100</number>
+              </property>
+              <property name="value">
+               <number>500</number>
+              </property>
+              <property name="suffix">
+               <string> leituras</string>
+              </property>
+              <property name="toolTip">
+               <string>Quantidade de leituras gravadas (cada uma é a média de uma janela de taxa_amostragem_ms)</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QRadioButton" name="radio_intervalo">
+              <property name="text">
+               <string>De</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QDateTimeEdit" name="datetime_inicio">
+              <property name="minimumSize">
+               <size>
+                <width>165</width>
+                <height>0</height>
+               </size>
+              </property>
+              <property name="enabled">
+               <bool>false</bool>
+              </property>
+              <property name="displayFormat">
+               <string>dd/MM/yyyy HH:mm:ss</string>
+              </property>
+              <property name="calendarPopup">
+               <bool>true</bool>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QLabel" name="label_ate">
+              <property name="text">
+               <string>até</string>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QDateTimeEdit" name="datetime_fim">
+              <property name="minimumSize">
+               <size>
+                <width>165</width>
+                <height>0</height>
+               </size>
+              </property>
+              <property name="enabled">
+               <bool>false</bool>
+              </property>
+              <property name="displayFormat">
+               <string>dd/MM/yyyy HH:mm:ss</string>
+              </property>
+              <property name="calendarPopup">
+               <bool>true</bool>
+              </property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="btn_consultar">
+              <property name="text">
+               <string>Consultar</string>
+              </property>
+              <property name="cursor">
+               <cursorShape>PointingHandCursor</cursorShape>
+              </property>
+             </widget>
+            </item>
+           </layout>
+          </widget>
+         </item>
+         <item>
+          <spacer name="espacador_grafico">
+           <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+           </property>
+           <property name="sizeHint" stdset="0">
+            <size>
+             <width>20</width>
+             <height>20</height>
+            </size>
+           </property>
+          </spacer>
+         </item>
+         <item>
+          <widget class="QLabel" name="label_status_grafico">
+           <property name="text">
+            <string>Tempo real: aguardando a placa</string>
+           </property>
+           <property name="alignment">
+            <set>Qt::AlignRight|Qt::AlignVCenter</set>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
        <item>
         <widget class="PlotWidget" name="grafico_tendencia"/>
        </item>

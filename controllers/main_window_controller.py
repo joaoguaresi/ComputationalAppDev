@@ -1,29 +1,26 @@
 import logging
-from collections import deque
+from datetime import datetime
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
-import pyqtgraph as pg
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from controllers.banco_controller import BancoController
 from controllers.comandos_controller import ComandosController
 from controllers.corte_controller import CorteController
 from controllers.eventos_controller import EventosController
+from controllers.grafico_controller import GraficoController
 from controllers.limites_controller import LimitesController
 from controllers.painel_serial_controller import PainelSerialController
 from controllers.serial_controller import SerialController
 from models.disjuntor import Disjuntor
 from models.dispositivo import Dispositivo
-from models.dispositivo_repository import DispositivoRepository
-from models.simulador_telemetria import SimuladorTelemetria
+from models.evento_historico import EventoHistorico
 from ui.main_window import Ui_JanelaPrincipal
 
 logger = logging.getLogger("smartgrid")
 
 
 class MainWindowController:
-    AMOSTRAS_GRAFICO = 60
-    INTERVALO_SIMULACAO_MS = 2000
     ALTURA_MINIMA_GRAFICO = 180
     ALTURA_MINIMA_TABELA = 80
     ALTURA_INDICADORES = 44
@@ -52,9 +49,14 @@ class MainWindowController:
         self.banco.iniciar()
         QApplication.instance().aboutToQuit.connect(self.banco.encerrar)
 
-        self.simulador = SimuladorTelemetria()
-        self.disjuntor = self._carregar_disjuntor()
-        self.medicoes = self._pre_carregar_medicoes()
+        # O status gravado do disjuntor é lido pelo DatabaseWorker; até a resposta, o
+        # indicador mostra que está carregando (_ao_carregar_disjuntor).
+        self.disjuntor = Disjuntor()
+        self._disjuntor_carregado = False
+        # STATUS_RELE que a placa informou antes de o disjuntor ser lido do banco.
+        self._rele_pendente = None
+        # Aviso não modal do relé que mudou sem comando, reaproveitado a cada mudança.
+        self._aviso_rele = None
 
         self.historico = EventosController(self.janela, self.ui.tabela_historico, self.banco)
         self.comandos = ComandosController(self.janela, self.ui, self.disjuntor, self.historico)
@@ -64,15 +66,16 @@ class MainWindowController:
         )
         self.corte.estado_disjuntor_alterado.connect(self._atualizar_disjuntor)
         self.corte.estado_disjuntor_alterado.connect(self.comandos.reavaliar_protecao)
-        self.limites = LimitesController(self.janela, self.ui, self.historico)
+        self.limites = LimitesController(self.janela, self.ui, self.historico, self.banco)
+        self.grafico = GraficoController(self.janela, self.ui, self.banco)
         self._ligar_serial()
 
-        self._configurar_grafico()
-        self._redesenhar_grafico()
         # Os mostradores ficam em branco até a placa mandar a primeira leitura.
         self._limpar_indicadores()
         self._atualizar_disjuntor()
         self.comandos.reavaliar_protecao()
+        self.banco.disjuntor_carregado.connect(self._ao_carregar_disjuntor)
+        self.banco.carregar_disjuntor()
 
     def _ajustar_layout(self):
         """Abre a janela maximizada e entrega ao gráfico a maior parte da altura livre."""
@@ -116,13 +119,17 @@ class MainWindowController:
         """Liga a thread serial ao dashboard.
 
         Cada lote de leituras vai para o banco (média por janela, no DatabaseWorker) e
-        atualiza os mostradores, a proteção por setpoint e os limites de segurança. O
-        !0/!1 do corte e do religamento vai para a placa, e o CorteController só grava a
-        operação quando ela confirma (ACK e STATUS_RELE no valor pedido).
+        atualiza o gráfico em tempo real, os mostradores, a proteção por setpoint e os
+        limites de segurança. O !0/!1 do corte e do religamento vai para a placa, e o
+        CorteController só grava a operação quando ela confirma (ACK e STATUS_RELE no
+        valor pedido). O disjuntor da tela segue o STATUS_RELE da placa ao conectar e
+        quando o relé muda sem comando.
         """
         self.serial.leituras_recebidas.connect(self._ao_receber_leituras)
         self.serial.desconectado.connect(self._limpar_indicadores)
         self.serial.conexao_perdida.connect(self._limpar_indicadores)
+        self.serial.desconectado.connect(self.grafico.placa_desconectada)
+        self.serial.conexao_perdida.connect(self.grafico.placa_desconectada)
 
         self.corte.comando_rele_solicitado.connect(self.serial.enviar_comando_rele)
         self.serial.rele_confirmado.connect(self.corte.confirmar_rele)
@@ -133,9 +140,17 @@ class MainWindowController:
         self.serial.rele_espontaneo.connect(self.banco.registrar_rele_espontaneo)
         self.serial.botao_pressionado.connect(self._ao_pressionar_botao_local)
 
+        # Disjuntor pelo STATUS_RELE. Ligado depois do registrar_rele_espontaneo: o evento
+        # da mudança espontânea entra na fila do banco antes do evento do disjuntor.
+        self.serial.rele_inicial.connect(self._ao_receber_rele_inicial)
+        self.serial.rele_espontaneo.connect(self._ao_mudar_rele_sem_comando)
+        self.banco.disjuntor_sincronizado.connect(self._ao_gravar_disjuntor_da_placa)
+        self.banco.disjuntor_nao_sincronizado.connect(self._ao_falhar_disjuntor_da_placa)
+
     def _ao_receber_leituras(self, lote):
         """Lote de LeituraTelemetria da thread serial (uns 20 por vez, 10 vezes por segundo)."""
         self.banco.gravar_leituras(lote)
+        self.grafico.adicionar_leituras(lote)
         leitura = lote[-1]
         self.ultima_leitura = leitura
         self._atualizar_indicadores(leitura)
@@ -165,48 +180,154 @@ class MainWindowController:
         log; a barra de status não trava a tela, ao contrário de um QMessageBox."""
         self.janela.statusBar().showMessage(mensagem, self.DURACAO_AVISO_BANCO_MS)
 
-    @staticmethod
-    def _carregar_disjuntor():
-        """Cria o disjuntor com o status gravado no banco, para o dashboard abrir no
+    def _ao_carregar_disjuntor(self, dispositivo, falha):
+        """Status gravado do disjuntor, lido pelo DatabaseWorker: o dashboard abre no
         último estado conhecido em vez de sempre FECHADO."""
         tag = Dispositivo.TAG_DISJUNTOR_PRINCIPAL
-        dispositivo = DispositivoRepository.buscar_por_tag(tag)
-        if dispositivo is None:
+        if dispositivo is not None:
+            logger.info("Estado do disjuntor %s carregado do banco: %s.", tag, dispositivo.status)
+            self.disjuntor.restaurar(dispositivo.status, dispositivo.ultima_atualizacao)
+        elif falha:
+            logger.warning("Estado do disjuntor %s não foi lido do banco (%s). Iniciando como FECHADO.", tag, falha)
+        else:
             logger.warning("Disjuntor %s não encontrado no banco. Iniciando como FECHADO.", tag)
-            return Disjuntor()
 
-        logger.info("Estado do disjuntor %s carregado do banco: %s.", tag, dispositivo.status)
-        return Disjuntor(dispositivo.status, dispositivo.ultima_atualizacao)
+        self._disjuntor_carregado = True
+        self._ao_mudar_disjuntor()
 
-    def _pre_carregar_medicoes(self):
-        """Gera o histórico inicial com a janela inteira do gráfico já preenchida.
+        if self._rele_pendente is not None:
+            status_rele, self._rele_pendente = self._rele_pendente, None
+            self._ao_receber_rele_inicial(status_rele)
 
-        A deque tem tamanho máximo fixo: cada nova medição empurra a mais antiga
-        para fora, então o gráfico desliza sem nunca ficar vazio ou pela metade.
+    def _ao_mudar_disjuntor(self):
+        """Atualiza tudo o que depende do estado do disjuntor: o indicador, a proteção
+        por setpoint e os botões de corte e religamento."""
+        self._atualizar_disjuntor()
+        self.comandos.reavaliar_protecao()
+        self.corte.atualizar_botoes()
+
+    # ------------------------------------------------------------------
+    # Disjuntor pelo STATUS_RELE da placa
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _estado_pelo_rele(status_rele) -> str:
+        """STATUS_RELE 1 = relé ligado = disjuntor FECHADO; 0 = ABERTO.
+
+        O LED da bancada acende ao contrário (o firmware usa o relé em nível baixo), mas o
+        STATUS_RELE já vem certo no protocolo: não há nada a inverter aqui.
         """
-        intervalo = self.INTERVALO_SIMULACAO_MS / 1000
-        historico = self.simulador.gerar_historico(self.AMOSTRAS_GRAFICO, intervalo)
-        logger.info("Gráfico de telemetria pré-carregado com %d amostras.", len(historico))
-        return deque(historico, maxlen=self.AMOSTRAS_GRAFICO)
+        if status_rele == CorteController.RELE_LIGADO:
+            return Disjuntor.FECHADO
+        return Disjuntor.ABERTO
 
-    def _configurar_grafico(self):
-        grafico = self.ui.grafico_tendencia
-        grafico.setBackground("w")
-        grafico.showGrid(x=True, y=True, alpha=0.3)
-        grafico.setLabel("bottom", "Tempo em relação à última leitura (s)")
-        grafico.setLabel("left", "Potência (W)")
+    def _ao_receber_rele_inicial(self, status_rele):
+        """STATUS_RELE do primeiro pacote depois do Conectar.
 
-        # Eixo X fixo: a amostra mais recente fica em 0 s e as anteriores à esquerda.
-        intervalo = self.INTERVALO_SIMULACAO_MS / 1000
-        inicio = -(self.AMOSTRAS_GRAFICO - 1) * intervalo
-        self.eixo_x = [inicio + indice * intervalo for indice in range(self.AMOSTRAS_GRAFICO)]
-        grafico.setXRange(inicio, 0, padding=0)
+        O Uno liga com o relé desligado, mas o banco pode ter o disjuntor FECHADO (a
+        aplicação foi fechada com a carga ligada). A tela segue a placa: o disjuntor passa
+        a ABERTO, com o evento no histórico, e o operador religa quando quiser. A
+        aplicação nunca manda o !1 sozinha: ligar a carga é decisão do operador.
+        """
+        if not self._disjuntor_carregado:
+            self._rele_pendente = status_rele
+            return
 
-        self.curva_potencia = grafico.plot(pen=pg.mkPen("#9B59B6", width=2))
+        estado = self._estado_pelo_rele(status_rele)
+        if estado == self.disjuntor.estado:
+            logger.info("Relé da placa ao conectar (STATUS_RELE = %d) confere com o disjuntor %s.", status_rele, estado)
+            return
 
-    def _redesenhar_grafico(self):
-        potencias = [medicao.calcular_potencia() for medicao in self.medicoes]
-        self.curva_potencia.setData(self.eixo_x, potencias)
+        if estado == Disjuntor.ABERTO:
+            descricao = f"Disjuntor aberto: a placa conectou com o relé desligado (STATUS_RELE = {status_rele})"
+            aviso = "A placa conectou com o relé desligado: disjuntor ABERTO. Use Religar disjuntor para ligar a carga."
+        else:
+            descricao = f"Disjuntor fechado: a placa conectou com o relé ligado (STATUS_RELE = {status_rele})"
+            aviso = "A placa conectou com o relé ligado: disjuntor FECHADO."
+        self._sincronizar_disjuntor(estado, descricao)
+        self.janela.statusBar().showMessage(aviso, self.DURACAO_AVISO_BANCO_MS)
+
+    def _ao_mudar_rele_sem_comando(self, status_rele, momento):
+        """O STATUS_RELE mudou sem comando do operador (por exemplo, o cabo USB foi puxado e
+        o Uno reiniciou com o relé desligado).
+
+        O evento da mudança espontânea já foi para o histórico pelo DatabaseWorker
+        (registrar_rele_espontaneo). Aqui o disjuntor passa a seguir o relé e o operador
+        recebe o aviso na tela.
+        """
+        momento = momento or datetime.now()
+        if not self._disjuntor_carregado:
+            self._rele_pendente = status_rele
+        else:
+            estado = self._estado_pelo_rele(status_rele)
+            if estado != self.disjuntor.estado:
+                if estado == Disjuntor.ABERTO:
+                    descricao = "Disjuntor aberto: o relé desligou sem comando do operador"
+                else:
+                    descricao = "Disjuntor fechado: o relé ligou sem comando do operador"
+                self._sincronizar_disjuntor(estado, descricao, momento)
+        self._avisar_rele_sem_comando(status_rele, momento)
+
+    def _sincronizar_disjuntor(self, estado, descricao, momento=None):
+        """Põe o disjuntor no estado que a placa informou e pede a gravação ao banco.
+
+        Diferente do corte, a tela muda antes do COMMIT: o relé já mudou de verdade, e
+        mostrar o estado antigo enquanto o banco grava enganaria o operador. O banco grava
+        o status do relé e do disjuntor junto com o evento, numa única transação.
+        """
+        if estado == Disjuntor.ABERTO:
+            self.disjuntor.abrir()
+        else:
+            self.disjuntor.fechar()
+        self._ao_mudar_disjuntor()
+
+        logger.warning("Disjuntor passou a %s pelo STATUS_RELE da placa: %s.", estado, descricao)
+        evento = EventoHistorico(
+            EventoHistorico.MUDANCA_DISJUNTOR,
+            descricao,
+            timestamp=momento,
+            dispositivo_tag=Dispositivo.TAG_DISJUNTOR_PRINCIPAL,
+        )
+        self.banco.sincronizar_disjuntor(estado, [evento])
+
+    def _ao_gravar_disjuntor_da_placa(self, _status, eventos):
+        """Depois do COMMIT: os eventos já gravados aparecem no histórico."""
+        for evento in eventos:
+            self.historico.publicar(evento)
+
+    def _ao_falhar_disjuntor_da_placa(self, status, motivo):
+        # A tela continua mostrando o estado real da placa; só o registro no banco falhou.
+        self.janela.statusBar().showMessage(
+            f"O disjuntor {status} informado pela placa não foi gravado no banco: {motivo}. "
+            "Detalhes em logs/smartgrid.log.",
+            self.DURACAO_AVISO_BANCO_MS,
+        )
+
+    def _avisar_rele_sem_comando(self, status_rele, momento):
+        """Aviso na tela, não modal: a telemetria e a reconexão continuam enquanto ele está
+        aberto. Uma mudança nova reaproveita a mesma caixa em vez de empilhar outra."""
+        estado_rele = "LIGADO" if status_rele == CorteController.RELE_LIGADO else "DESLIGADO"
+        texto = f"O relé de emergência passou a {estado_rele} às {momento:%H:%M:%S} sem comando do operador.\n\n"
+        if status_rele == CorteController.RELE_LIGADO:
+            texto += "O disjuntor foi marcado como FECHADO e a carga está ligada. Confira a bancada."
+        else:
+            texto += (
+                "Causa provável: a placa reiniciou (cabo USB puxado ou falta de energia) e voltou com o "
+                "relé desligado.\n\nO disjuntor foi marcado como ABERTO e a carga está desligada. "
+                "Para ligá-la de novo, use \"Religar disjuntor\"."
+            )
+
+        if self._aviso_rele is None:
+            self._aviso_rele = QMessageBox(
+                QMessageBox.Warning, "Relé mudou sem comando", "", QMessageBox.Ok, self.janela
+            )
+            self._aviso_rele.setModal(False)
+        self._aviso_rele.setText(texto)
+        self._aviso_rele.show()
+        self._aviso_rele.raise_()
+        self.janela.statusBar().showMessage(
+            f"Relé de emergência passou a {estado_rele} sem comando do operador.", self.DURACAO_AVISO_BANCO_MS
+        )
 
     def _potencia_atual(self) -> float:
         """Potência da leitura mais recente da placa, gravada no evento do corte de emergência."""
@@ -221,6 +342,13 @@ class MainWindowController:
         self.ui.lcd_potencia.display(dados["potencia"])
 
     def _atualizar_disjuntor(self):
+        if not self._disjuntor_carregado:
+            self.ui.label_disjuntor_status.setText("Disjuntor: lendo o estado no banco...")
+            self.ui.label_disjuntor_status.setStyleSheet(
+                "background-color: #7F8C8D; color: white; border-radius: 6px; padding: 6px; font-weight: bold;"
+            )
+            return
+
         dados = self.disjuntor.get_dados()
         self.ui.label_disjuntor_status.setText(dados["texto"])
         self.ui.label_disjuntor_status.setToolTip(f"Última alteração: {dados['data_hora']}")

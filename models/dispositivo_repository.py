@@ -45,13 +45,17 @@ class DispositivoRepository:
         return [cls._para_dispositivo(linha) for linha in linhas]
 
     @classmethod
-    def buscar_por_tag(cls, tag):
-        """Dispositivo com a tag informada, ou None se ela não existir."""
-        with closing(Database.get_connection()) as conn:
-            linha = conn.execute(
-                "SELECT id, tag, tipo, status, ultima_atualizacao FROM dispositivos WHERE tag = ?",
-                (tag,),
-            ).fetchone()
+    def buscar_por_tag(cls, tag, conn=None):
+        """Dispositivo com a tag informada, ou None se ela não existir.
+
+        Com conn, lê pela conexão de quem chamou (a do DatabaseWorker) e não a fecha.
+        """
+        sql = "SELECT id, tag, tipo, status, ultima_atualizacao FROM dispositivos WHERE tag = ?"
+        if conn is not None:
+            linha = conn.execute(sql, (tag,)).fetchone()
+        else:
+            with closing(Database.get_connection()) as nova_conn:
+                linha = nova_conn.execute(sql, (tag,)).fetchone()
 
         if linha is None:
             return None

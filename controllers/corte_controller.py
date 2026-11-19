@@ -63,7 +63,7 @@ class CorteController(QObject):
         self.ui.btn_religar_disjuntor.clicked.connect(self._ao_solicitar_religamento)
         self.banco.operacao_rele_gravada.connect(self._ao_gravar_operacao)
         self.banco.operacao_rele_falhou.connect(self._ao_falhar_operacao)
-        self._atualizar_botoes()
+        self.atualizar_botoes()
 
     # ------------------------------------------------------------------
     # Pedido do comando à placa
@@ -104,7 +104,7 @@ class CorteController(QObject):
 
         self._status_pendente = status_rele
         self._potencia_no_pedido = self.obter_potencia_atual()
-        self._atualizar_botoes()
+        self.atualizar_botoes()
         self.janela.statusBar().showMessage("Comando enviado à placa. Aguardando confirmação...")
         logger.info(
             "Comando de %s o relé enviado à placa; aguardando confirmação.",
@@ -150,7 +150,7 @@ class CorteController(QObject):
         if status_rele != self._status_pendente:
             return
         self._status_pendente = None
-        self._atualizar_botoes()
+        self.atualizar_botoes()
         self.janela.statusBar().clearMessage()
 
         operacao = "corte emergencial" if status_rele == self.RELE_DESLIGADO else "religamento do disjuntor"
@@ -195,7 +195,7 @@ class CorteController(QObject):
     def _ao_falhar_operacao(self, status, motivo, estado_no_banco):
         self._status_pendente = None
         self.janela.statusBar().clearMessage()
-        self._atualizar_botoes()
+        self.atualizar_botoes()
 
         operacao = "corte emergencial" if status == Dispositivo.ABERTO else "religamento do disjuntor"
         self._informar_falha(operacao, motivo, estado_no_banco)
@@ -204,7 +204,7 @@ class CorteController(QObject):
         """Mostra os eventos já gravados na transação e atualiza o dashboard."""
         for evento in eventos:
             self.historico.publicar(evento)
-        self._atualizar_botoes()
+        self.atualizar_botoes()
         self.estado_disjuntor_alterado.emit()
 
     def _informar_falha(self, operacao, motivo, estado_no_banco):
@@ -222,7 +222,7 @@ class CorteController(QObject):
             f"Estado do disjuntor no banco: {estado_no_banco}",
         )
 
-    def _atualizar_botoes(self):
+    def atualizar_botoes(self):
         """Com um comando aguardando a placa, os dois botões ficam bloqueados."""
         livre = self._status_pendente is None
         fechado = self.disjuntor.esta_fechado()

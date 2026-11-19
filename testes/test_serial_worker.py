@@ -88,9 +88,16 @@ class TesteSerial(unittest.TestCase):
         return [args[0] for args in self.recebidos("estado_alterado")]
 
     def conectar(self, taxa=115200):
-        """Faz o handshake completo e espera a telemetria ser liberada."""
+        """Faz o handshake completo e espera a telemetria ser liberada.
+
+        Espera também o sinal conectado: o worker o emite logo depois do estado
+        CONECTADO, e um processEvents entre os dois veria o estado sem o sinal.
+        """
         self.serial.conectar(PORTA, taxa, 1000)
-        self.assertTrue(esperar(lambda: self.serial.estado == CONECTADO), f"estados: {self.estados()}")
+        self.assertTrue(
+            esperar(lambda: self.serial.estado == CONECTADO and self.recebidos("conectado")),
+            f"estados: {self.estados()}",
+        )
 
 
 class TestMaquinaDeEstados(TesteSerial):

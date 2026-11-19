@@ -44,6 +44,14 @@ class Limite:
         TENSAO_DESARME: "tensao_desarme",
     }
 
+    # Maior valor aceito para cada limite: a faixa física da bancada (0 a 12 V e ±30 A),
+    # a mesma que valida o config.json. Um limite acima dela nunca dispararia, como os
+    # 242 V da rede elétrica que a A1/2 gravava na tabela limites.
+    MAXIMOS = {
+        CORRENTE_MAX: ConfigManager.CORRENTE_MAXIMA_A,
+        TENSAO_DESARME: ConfigManager.TENSAO_MAXIMA_V,
+    }
+
     def __init__(self, parametro, valor, unidade=None,
                  dispositivo_tag=Dispositivo.TAG_DISJUNTOR_PRINCIPAL, limite_id=None):
         self.id = limite_id
@@ -78,6 +86,54 @@ class Limite:
                 valor = padrao
             limites.append(cls(parametro, float(valor)))
         return limites
+
+    @classmethod
+    def revisar_gravados(cls, gravados) -> tuple:
+        """Confere os limites lidos da tabela limites contra a faixa da bancada.
+
+        Devolve (limites, corrigidos, faltando):
+        - limites: um para cada parâmetro, o que será monitorado;
+        - corrigidos: pares (gravado, inicial) dos limites gravados acima da faixa da
+          bancada, trocados pelo valor inicial do config.json (quem chamou deve
+          regravar o inicial no banco);
+        - faltando: parâmetros sem limite gravado, que usam o valor inicial do config.json
+          até o operador salvar os limites no QDialog.
+
+        A tabela continua tendo prioridade sobre o config.json: só o valor que não cabe
+        na bancada é trocado.
+        """
+        iniciais = {limite.parametro: limite for limite in cls.iniciais_do_config()}
+        por_parametro = {limite.parametro: limite for limite in gravados}
+
+        limites, corrigidos, faltando = [], [], []
+        for parametro in cls.PARAMETROS:
+            limite = por_parametro.get(parametro)
+            if limite is None:
+                faltando.append(parametro)
+                limites.append(iniciais[parametro])
+                continue
+
+            if limite.excede_a_bancada():
+                inicial = iniciais[parametro]
+                logger.warning(
+                    "Limite de %s gravado no banco (%s) acima da faixa da bancada (até %s). "
+                    "Trocado pelo valor inicial do config.json: %s.",
+                    limite.get_nome().lower(), limite.get_valor_formatado(),
+                    limite.get_maximo_formatado(), inicial.get_valor_formatado(),
+                )
+                corrigidos.append((limite, inicial))
+                limites.append(inicial)
+                continue
+
+            limites.append(limite)
+        return limites, corrigidos, faltando
+
+    def excede_a_bancada(self) -> bool:
+        """True se o limite passa da faixa física da bancada e, por isso, nunca dispararia."""
+        return self.valor > Limite.MAXIMOS[self.parametro]
+
+    def get_maximo_formatado(self) -> str:
+        return f"{Limite.MAXIMOS[self.parametro]:.2f} {self.unidade}"
 
     @staticmethod
     def _valor_inicial_valido(valor) -> bool:

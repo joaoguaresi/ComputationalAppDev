@@ -28,7 +28,11 @@ class BancoController(QObject):
     rele_espontaneo_solicitado = Signal(int, object)
     botao_local_solicitado = Signal(object)
     operacao_rele_solicitada = Signal(str, list, bool)
+    sincronizacao_disjuntor_solicitada = Signal(str, list)
     consulta_solicitada = Signal(int, object)
+    carga_disjuntor_solicitada = Signal()
+    carga_limites_solicitada = Signal()
+    gravacao_limites_solicitada = Signal(list)
     encerramento_solicitado = Signal()
 
     # Repassam as respostas do worker, já na thread da interface.
@@ -37,8 +41,14 @@ class BancoController(QObject):
     evento_nao_gravado = Signal(object, str)
     operacao_rele_gravada = Signal(str, list)
     operacao_rele_falhou = Signal(str, str, str)
+    disjuntor_sincronizado = Signal(str, list)
+    disjuntor_nao_sincronizado = Signal(str, str)
     historico_consultado = Signal(int, list, int)
     historico_falhou = Signal(int, str)
+    disjuntor_carregado = Signal(object, str)
+    limites_carregados = Signal(list, bool, str)
+    limites_salvos = Signal(list)
+    limites_nao_salvos = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -57,7 +67,11 @@ class BancoController(QObject):
         self.rele_espontaneo_solicitado.connect(self.worker.registrar_rele_espontaneo)
         self.botao_local_solicitado.connect(self.worker.registrar_botao_local)
         self.operacao_rele_solicitada.connect(self.worker.gravar_operacao_rele)
+        self.sincronizacao_disjuntor_solicitada.connect(self.worker.sincronizar_disjuntor)
         self.consulta_solicitada.connect(self.worker.consultar_historico)
+        self.carga_disjuntor_solicitada.connect(self.worker.carregar_disjuntor)
+        self.carga_limites_solicitada.connect(self.worker.carregar_limites)
+        self.gravacao_limites_solicitada.connect(self.worker.salvar_limites)
         self.encerramento_solicitado.connect(self.worker.encerrar)
 
         # Sinal ligado a sinal: o worker emite na thread do banco e o Qt reemite estes na
@@ -67,8 +81,14 @@ class BancoController(QObject):
         self.worker.evento_nao_gravado.connect(self.evento_nao_gravado)
         self.worker.operacao_rele_gravada.connect(self.operacao_rele_gravada)
         self.worker.operacao_rele_falhou.connect(self.operacao_rele_falhou)
+        self.worker.disjuntor_sincronizado.connect(self.disjuntor_sincronizado)
+        self.worker.disjuntor_nao_sincronizado.connect(self.disjuntor_nao_sincronizado)
         self.worker.historico_consultado.connect(self.historico_consultado)
         self.worker.historico_falhou.connect(self.historico_falhou)
+        self.worker.disjuntor_carregado.connect(self.disjuntor_carregado)
+        self.worker.limites_carregados.connect(self.limites_carregados)
+        self.worker.limites_salvos.connect(self.limites_salvos)
+        self.worker.limites_nao_salvos.connect(self.limites_nao_salvos)
         # O worker vive na thread do banco: o deleteLater dele é atendido quando ela termina.
         self.thread_banco.finished.connect(self.worker.deleteLater)
 
@@ -103,6 +123,11 @@ class BancoController(QObject):
         pela placa. A resposta vem por operacao_rele_gravada ou operacao_rele_falhou."""
         self.operacao_rele_solicitada.emit(status, list(eventos), simular_falha)
 
+    def sincronizar_disjuntor(self, status, eventos):
+        """Pede a gravação do status que o STATUS_RELE da placa impôs ao disjuntor, com os
+        eventos. A resposta vem por disjuntor_sincronizado ou disjuntor_nao_sincronizado."""
+        self.sincronizacao_disjuntor_solicitada.emit(status, list(eventos))
+
     def consultar_historico(self, filtro) -> int:
         """Pede a consulta do FiltroHistorico e devolve o número do pedido na hora.
 
@@ -113,6 +138,19 @@ class BancoController(QObject):
         self._ultimo_pedido += 1
         self.consulta_solicitada.emit(self._ultimo_pedido, filtro)
         return self._ultimo_pedido
+
+    def carregar_disjuntor(self):
+        """Pede o status gravado do disjuntor; a resposta vem por disjuntor_carregado."""
+        self.carga_disjuntor_solicitada.emit()
+
+    def carregar_limites(self):
+        """Pede os limites de segurança gravados; a resposta vem por limites_carregados."""
+        self.carga_limites_solicitada.emit()
+
+    def salvar_limites(self, limites):
+        """Pede a gravação dos limites numa única transação; a resposta vem por
+        limites_salvos ou limites_nao_salvos."""
+        self.gravacao_limites_solicitada.emit(list(limites))
 
     def encerrar(self):
         """Encerramento cooperativo: pede ao worker que pare e espera a thread terminar.

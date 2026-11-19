@@ -67,17 +67,22 @@ class LimiteRepository:
             logger.info("Limite %s salvo: %s.", limite.parametro, limite.get_valor_formatado())
 
     @classmethod
-    def listar_todos(cls) -> list:
-        """Todos os limites gravados, em ordem de parâmetro."""
-        with closing(Database.get_connection()) as conn:
-            linhas = conn.execute(
-                """
-                SELECT l.id, l.parametro, l.valor, l.unidade, d.tag AS dispositivo_tag
-                FROM limites AS l
-                LEFT JOIN dispositivos AS d ON d.id = l.dispositivo_id
-                ORDER BY l.parametro
-                """
-            ).fetchall()
+    def listar_todos(cls, conn=None) -> list:
+        """Todos os limites gravados, em ordem de parâmetro.
+
+        Com conn, lê pela conexão de quem chamou (a do DatabaseWorker) e não a fecha.
+        """
+        sql = """
+            SELECT l.id, l.parametro, l.valor, l.unidade, d.tag AS dispositivo_tag
+            FROM limites AS l
+            LEFT JOIN dispositivos AS d ON d.id = l.dispositivo_id
+            ORDER BY l.parametro
+        """
+        if conn is not None:
+            linhas = conn.execute(sql).fetchall()
+        else:
+            with closing(Database.get_connection()) as nova_conn:
+                linhas = nova_conn.execute(sql).fetchall()
 
         return [cls._para_limite(linha) for linha in linhas]
 

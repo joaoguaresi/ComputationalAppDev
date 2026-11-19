@@ -29,7 +29,7 @@ O dashboard exibe as grandezas elétricas monitoradas e o estado da proteção:
 - Botão de CORTE DE EMERGÊNCIA com confirmação antes do envio, disparando o comando RELAY_OFF
 - Ajuste do setpoint de potência e cadastro dos limites de segurança (corrente máxima e tensão de desarme) em janela modal, com validação dos valores digitados
 - Alerta visual quando a potência passa do setpoint ou quando a corrente ou a tensão passam dos limites de segurança, com registro automático da ocorrência
-- Gráfico de tendência pré-carregado com o histórico da curva de consumo
+- Gráfico de tendência em dois modos: tempo real pela serial (pré-carregado com as últimas leituras do banco) e histórico filtrado por quantidade ou por intervalo de data/hora
 - Painel de configuração da conexão serial (porta COM, baud rate 9600 ou 115200, timeout)
 - Histórico de eventos com data/hora, tipo, descrição e valor medido
 - Estado dos dispositivos, histórico de eventos e limites de segurança gravados em banco SQLite
@@ -138,14 +138,15 @@ Operações, anomalias e erros são registrados em `logs/smartgrid.log`, com dat
 
 ## Limites de segurança
 
-- **Cadastro** (botão **Configurar Regras de Alerta**): o QDialog abre com os limites gravados na tabela `limites`, ou com os iniciais do `config.json` se ela estiver vazia. O valor digitado é validado no controller, nesta ordem: campo vazio, valor não numérico (a vírgula decimal é aceita) e valor menor ou igual a zero. Cada falha mostra um `QMessageBox`, registra WARNING no log e nada é salvo.
-- **Gravação**: no OK, os dois limites são gravados numa única transação (`with conn:`). Se o banco recusar algum valor (`IntegrityError` do CHECK), o ROLLBACK desfaz os dois e o diálogo continua aberto para correção.
+- **Carga**: ao abrir o dashboard, o `DatabaseWorker` lê a tabela `limites` na thread do banco. A tabela tem prioridade sobre o `config.json`, mas um limite gravado acima da faixa da bancada (como os 242 V da A1/2) nunca dispararia: ele é trocado pelo valor inicial do `config.json`, com WARNING no log, e regravado no banco junto com um evento "Regras de Alerta" no histórico. Até a resposta chegar, o monitoramento usa os limites iniciais do `config.json`.
+- **Cadastro** (botão **Configurar Regras de Alerta**): o QDialog abre com os limites monitorados, ou com os iniciais do `config.json` se a tabela estiver vazia. O valor digitado é validado no controller, nesta ordem: campo vazio, valor não numérico (a vírgula decimal é aceita), valor menor ou igual a zero e valor acima da faixa da bancada (12 V ou 30 A). Cada falha mostra um `QMessageBox`, registra WARNING no log e nada é salvo.
+- **Gravação**: no OK, o `DatabaseWorker` grava os dois limites numa única transação (`with conn:`), e o diálogo fica travado até a resposta. Se o banco recusar algum valor (`IntegrityError` do CHECK) ou estiver ocupado, o ROLLBACK desfaz os dois e o diálogo continua aberto para correção.
 - **Monitoramento** (`controllers/limites_controller.py`): cada medição é comparada com os limites. Quando a corrente ou a tensão passa do limite, o indicador fica vermelho, o evento é gravado no banco e aparece no histórico, e o log recebe o WARNING. A violação é registrada só quando começa; enquanto continua, nada se repete. O setpoint de potência do dashboard também registra WARNING no log quando é ultrapassado.
 
 ## Roteiro da demonstração (A1/2)
 
 1. **Clone limpo**: depois do `git clone`, as pastas `data/` e `logs/` só têm o `.gitkeep`. Na primeira execução, `config.json`, `smartgrid.db` e `smartgrid.log` são criados automaticamente.
-2. **Falha de validação**: em **Configurar Regras de Alerta**, clique em **Adicionar Regra** com o campo vazio, depois com `abc` e depois com `-5`. Cada tentativa é bloqueada com um `QMessageBox` e nada é salvo. Em seguida, cadastre a corrente máxima `6,0` e a tensão de desarme `242` e clique em **OK**.
+2. **Falha de validação**: em **Configurar Regras de Alerta**, clique em **Adicionar Regra** com o campo vazio, depois com `abc`, com `-5` e com `50` na tensão (acima dos 12 V da bancada). Cada tentativa é bloqueada com um `QMessageBox` e nada é salvo. Em seguida, cadastre a corrente máxima `6,0` e a tensão de desarme `10` e clique em **OK**.
 3. **Alarme de limite**: a corrente simulada oscila entre cerca de 3,2 A e 7,9 A, num ciclo de uns 40 s. Quando ela passa de 6 A, o indicador de corrente fica vermelho e o evento aparece no histórico. Com os limites padrão (25 A e 242 V) o simulador nunca gera violação.
 4. **Falha transacional com ROLLBACK**: siga a [Demonstração do ROLLBACK](#demonstração-do-rollback).
 5. **Auditoria**: abra `logs/smartgrid.log` e mostre as linhas `WARNING` (entradas inválidas e limite violado) e `ERROR` (rollback do corte).
@@ -215,6 +216,24 @@ A aplicação roda em três threads: a da interface, a serial (`controllers/seri
 
 **Testes**: `python -m unittest` também roda os testes da thread serial (`testes/test_serial_worker.py`). Eles usam a `PlacaSimulada` (`testes/placa_simulada.py`), que imita o firmware atrás da mesma interface do pyserial, inclusive o cabo puxado.
 
+## Gráfico em dois modos e histórico (A1/5)
+
+O gráfico fica no `GraficoController` (`controllers/grafico_controller.py`). O seletor **Modo** troca o que está desenhado: os pontos do tempo real e os do histórico ficam guardados separados, e a telemetria continua entrando enquanto o operador olha o histórico.
+
+- **Tempo real**: ao abrir, o gráfico é pré-carregado com as leituras mais recentes da tabela `leituras` (60 s, ou seja, as últimas 120 com janelas de 500 ms), pedidas ao `DatabaseWorker`. Com a placa conectada, cada lote da thread serial (uns 20 pacotes a cada 100 ms) entra na curva, um ponto por `$DAT`, e o gráfico mostra os últimos 60 s.
+- **Histórico**: as últimas N leituras gravadas (1 a 10.000) ou um intervalo de data/hora. Ao entrar no modo, o filtro da tela é consultado sozinho; depois, **Consultar** refaz a consulta.
+- **Validação do filtro**: antes de qualquer consulta, o filtro é validado no controller. Início depois do fim ou início no futuro mostram um `QMessageBox`, registram WARNING no log e nada vai para o banco.
+- **Consulta assíncrona**: a consulta roda na thread do banco. Enquanto ela anda, o status mostra "consultando..." e o cursor sobre o gráfico fica ocupado. Cada pedido tem um número; se o operador consultar de novo antes da resposta, a resposta antiga é descartada. Um intervalo com mais de 10.000 leituras volta agrupado (cada ponto é a média de um bloco de leituras seguidas).
+- **Eixo de data/hora**: o eixo X mostra o horário local de cada ponto, no formato que o zoom pedir (de milissegundos a dias). Um período sem leituras (aplicação fechada, placa desconectada) aparece como um buraco na curva, e não como uma reta.
+- **Setpoint**: o spin do setpoint vai de 10 W a 360 W, a potência máxima da bancada (12 V × 30 A, `ConfigManager.TENSAO_MAXIMA_V` × `CORRENTE_MAXIMA_A`).
+
+**Disjuntor pelo STATUS_RELE**: o estado gravado do disjuntor é lido pelo `DatabaseWorker` ao abrir o dashboard. Depois, a placa é a fonte da verdade:
+
+- **Ao conectar**: o Uno liga com o relé desligado, mas o banco pode ter o disjuntor FECHADO. Se o STATUS_RELE do primeiro pacote não bate com o banco, o disjuntor passa a seguir a placa, o evento "Mudança de Estado do Disjuntor" é gravado junto com o status (mesma transação) e a barra de status explica. A aplicação nunca manda o `!1` sozinha: religar a carga é decisão do operador.
+- **Relé que muda sem comando**: além do evento "Mudança Espontânea do Relé", o disjuntor passa ao estado do relé (com o evento do disjuntor) e uma janela de aviso, não modal, explica a causa provável. A tela muda antes do COMMIT, porque o relé já mudou de verdade.
+
+**Testes**: `testes/test_grafico.py` (filtro, consulta, modos e tempo real), `testes/test_limites_disjuntor.py` (limites e disjuntor pelo `DatabaseWorker`, com banco temporário) e `testes/test_disjuntor_pela_placa.py` (o dashboard inteiro com a `PlacaSimulada`: tempo real, relé ao conectar e relé que muda sozinho). Rodam com `python -m unittest`, sem a placa e sem abrir janela.
+
 ## Como executar
 
 ```
@@ -228,4 +247,4 @@ Para usar um ambiente virtual (opcional), antes do `pip install` rode `python -m
 
 ## Status atual
 
-Entrega A1/2 concluída. O estado dos dispositivos, o histórico de eventos e os limites de segurança ficam gravados em SQLite; o corte emergencial é transacional, com demonstração de ROLLBACK; os parâmetros de inicialização ficam no `config.json`; e operações, anomalias e erros são registrados em `logs/smartgrid.log`. Na A1/5, a comunicação serial com a placa é real, numa thread própria, com handshake, confirmação do relé e reconexão automática.
+Entrega A1/2 concluída. O estado dos dispositivos, o histórico de eventos e os limites de segurança ficam gravados em SQLite; o corte emergencial é transacional, com demonstração de ROLLBACK; os parâmetros de inicialização ficam no `config.json`; e operações, anomalias e erros são registrados em `logs/smartgrid.log`. Na A1/5, a comunicação serial com a placa é real, numa thread própria, com handshake, confirmação do relé e reconexão automática; o gráfico mostra a telemetria em tempo real e o histórico gravado, e o disjuntor segue o STATUS_RELE da placa.

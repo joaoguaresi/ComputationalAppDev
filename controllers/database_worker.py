@@ -14,6 +14,8 @@ from models.evento_historico import EventoHistorico
 from models.evento_repository import EventoRepository
 from models.filtro_historico import FiltroHistorico
 from models.leitura_repository import LeituraRepository
+from models.limite import Limite
+from models.limite_repository import LimiteRepository
 
 logger = logging.getLogger("smartgrid")
 
@@ -61,10 +63,27 @@ class DatabaseWorker(QObject):
     operacao_rele_gravada = Signal(str, list)
     operacao_rele_falhou = Signal(str, str, str)
 
+    # Respostas da sincronização do disjuntor com o STATUS_RELE da placa (relé que a
+    # placa informou ao conectar ou que mudou sem comando): status e eventos gravados,
+    # ou status pedido e motivo da falha.
+    disjuntor_sincronizado = Signal(str, list)
+    disjuntor_nao_sincronizado = Signal(str, str)
+
     # Respostas da consulta de histórico: número do pedido, leituras e quantas janelas
     # gravadas formam cada ponto (1 = sem agrupamento); ou número do pedido e motivo.
     historico_consultado = Signal(int, list, int)
     historico_falhou = Signal(int, str)
+
+    # Respostas da carga do estado salvo, pedida ao abrir o dashboard: o dispositivo do
+    # disjuntor (None se ele não foi lido) e o motivo da falha ('' quando leu o banco).
+    disjuntor_carregado = Signal(object, str)
+    # Limites monitorados, se algum deles ainda não está gravado (veio do config.json)
+    # e o motivo da falha ('' quando leu o banco).
+    limites_carregados = Signal(list, bool, str)
+
+    # Respostas da gravação dos limites do QDialog: os limites gravados, ou o motivo.
+    limites_salvos = Signal(list)
+    limites_nao_salvos = Signal(str)
 
     def __init__(self):
         # Sem pai: o moveToThread não aceita um objeto que tem pai.
@@ -252,6 +271,121 @@ class DatabaseWorker(QObject):
         self.historico_consultado.emit(pedido, leituras, agrupar)
 
     # ------------------------------------------------------------------
+    # Disjuntor e limites de segurança
+    # ------------------------------------------------------------------
+
+    @Slot()
+    def carregar_disjuntor(self):
+        """Lê o status gravado do disjuntor principal e devolve por disjuntor_carregado."""
+        if self._conn is None:
+            self.disjuntor_carregado.emit(None, "a conexão com o banco não está aberta")
+            return
+
+        try:
+            dispositivo = DispositivoRepository.buscar_por_tag(Dispositivo.TAG_DISJUNTOR_PRINCIPAL, conn=self._conn)
+        except sqlite3.Error as erro:
+            motivo = self.MOTIVO_BANCO_OCUPADO if self._eh_banco_ocupado(erro) else str(erro)
+            logger.error("Falha ao carregar o estado do disjuntor do banco: %s", motivo)
+            self.disjuntor_carregado.emit(None, motivo)
+            return
+
+        self.disjuntor_carregado.emit(dispositivo, "")
+
+    @Slot()
+    def carregar_limites(self):
+        """Lê a tabela limites, confere cada valor contra a faixa da bancada e devolve
+        por limites_carregados os limites que o dashboard deve monitorar.
+
+        A tabela tem prioridade sobre o config.json, mas um limite gravado acima da faixa
+        da bancada (os 242 V da A1/2, por exemplo) nunca dispararia: ele é trocado pelo
+        valor inicial do config.json e regravado no banco, junto com um evento no
+        histórico, numa única transação. Parâmetro sem limite gravado usa o valor
+        inicial do config.json, que só é gravado quando o operador confirma no QDialog.
+        Sem banco, o monitoramento usa os valores iniciais: o dashboard nunca fica sem proteção.
+        """
+        if self._conn is None:
+            self.limites_carregados.emit(Limite.iniciais_do_config(), True, "a conexão com o banco não está aberta")
+            return
+
+        try:
+            gravados = LimiteRepository.listar_todos(conn=self._conn)
+        except sqlite3.Error as erro:
+            motivo = self.MOTIVO_BANCO_OCUPADO if self._eh_banco_ocupado(erro) else str(erro)
+            logger.error("Falha ao carregar os limites de segurança do banco: %s", motivo)
+            self.limites_carregados.emit(Limite.iniciais_do_config(), True, motivo)
+            return
+
+        limites, corrigidos, faltando = Limite.revisar_gravados(gravados)
+        regravou = not corrigidos or self._regravar_limites_corrigidos(corrigidos)
+        self.limites_carregados.emit(limites, bool(faltando) or not regravou, "")
+
+    def _regravar_limites_corrigidos(self, corrigidos) -> bool:
+        """Grava os valores corrigidos e o evento da correção numa única transação."""
+        descricao = "Limites gravados acima da faixa da bancada trocados pelo valor inicial do config.json: " + ", ".join(
+            f"{gravado.get_nome().lower()} {gravado.get_valor_formatado()} -> {inicial.get_valor_formatado()}"
+            for gravado, inicial in corrigidos
+        )
+        evento = EventoHistorico(EventoHistorico.REGRAS_ALERTA, descricao)
+        try:
+            with self._conn:
+                for _, inicial in corrigidos:
+                    LimiteRepository.salvar(inicial, conn=self._conn)
+                EventoRepository.inserir(evento, conn=self._conn)
+        except sqlite3.Error as erro:
+            logger.error(
+                "Não foi possível regravar os limites corrigidos. Rollback executado; o monitoramento "
+                "usa os valores corrigidos mesmo assim: %s.", erro,
+            )
+            return False
+
+        logger.info("Limites corrigidos regravados no banco: %s.", Limite.resumir([i for _, i in corrigidos]))
+        self.evento_gravado.emit(evento)
+        return True
+
+    @Slot(list)
+    def salvar_limites(self, limites):
+        """Grava os limites do QDialog numa única transação: ou todos, ou nenhum.
+
+        Cada LimiteRepository.salvar usa a conexão do worker sem commit; o with conn: faz
+        o COMMIT só no fim do bloco. Se qualquer limite falhar (IntegrityError do CHECK,
+        por exemplo), o ROLLBACK desfaz os que já tinham sido gravados. Com o banco
+        ocupado a gravação não fica guardada: o operador recebe a falha e tenta de novo.
+        """
+        # Segunda barreira, depois da validação do QDialog: nada acima da bancada chega ao banco.
+        fora_da_faixa = [limite for limite in limites if limite.excede_a_bancada()]
+        if fora_da_faixa:
+            motivo = "valor acima da faixa da bancada: " + ", ".join(
+                f"{limite.get_nome().lower()} {limite.get_valor_formatado()} (máximo {limite.get_maximo_formatado()})"
+                for limite in fora_da_faixa
+            )
+            logger.warning("Limites de segurança recusados: %s.", motivo)
+            self.limites_nao_salvos.emit(motivo)
+            return
+
+        if self._conn is None:
+            self.limites_nao_salvos.emit("a conexão com o banco não está aberta")
+            return
+
+        try:
+            with self._conn:
+                for limite in limites:
+                    LimiteRepository.salvar(limite, conn=self._conn)
+        except sqlite3.IntegrityError as erro:
+            logger.error("Limites de segurança recusados pelo banco. Rollback executado: %s.", erro)
+            self.limites_nao_salvos.emit(
+                f"o banco recusou os limites por violarem uma restrição de integridade ({erro})"
+            )
+            return
+        except sqlite3.Error as erro:
+            motivo = self.MOTIVO_BANCO_OCUPADO if self._eh_banco_ocupado(erro) else str(erro)
+            logger.error("Falha ao salvar os limites de segurança, nenhum limite foi alterado: %s.", motivo)
+            self.limites_nao_salvos.emit(motivo)
+            return
+
+        logger.info("Limites de segurança salvos no banco: %s.", Limite.resumir(limites))
+        self.limites_salvos.emit(list(limites))
+
+    # ------------------------------------------------------------------
     # Eventos
     # ------------------------------------------------------------------
 
@@ -336,24 +470,54 @@ class DatabaseWorker(QObject):
             return
 
         try:
-            with self._conn:
-                for tag in self.TAGS_OPERACAO_RELE:
-                    if not DispositivoRepository.atualizar_status(tag, status, conn=self._conn):
-                        raise FalhaOperacaoError(f"dispositivo {tag} não está cadastrado no banco")
-
-                if simular_falha:
-                    raise FalhaOperacaoError(
-                        "falha simulada entre a atualização do disjuntor e o registro do evento"
-                    )
-
-                for evento in eventos:
-                    EventoRepository.inserir(evento, conn=self._conn)
+            self._gravar_status_e_eventos(status, eventos, simular_falha)
         except (FalhaOperacaoError, sqlite3.Error) as erro:
             motivo = self.MOTIVO_BANCO_OCUPADO if self._eh_banco_ocupado(erro) else str(erro)
             self.operacao_rele_falhou.emit(status, motivo, self._status_disjuntor_no_banco())
             return
 
         self.operacao_rele_gravada.emit(status, eventos)
+
+    @Slot(str, list)
+    def sincronizar_disjuntor(self, status, eventos):
+        """Grava o status que o STATUS_RELE da placa impôs ao relé e ao disjuntor, com os
+        eventos, na mesma transação do corte: o status nunca muda sem o evento.
+
+        Diferente do corte, aqui o hardware já mudou (a placa ligou com o relé desligado,
+        ou ele mudou sozinho): a tela já mostra o estado real, e o banco só registra.
+        """
+        if self._conn is None:
+            self.disjuntor_nao_sincronizado.emit(status, "a conexão com o banco não está aberta")
+            return
+
+        try:
+            self._gravar_status_e_eventos(status, eventos)
+        except (FalhaOperacaoError, sqlite3.Error) as erro:
+            motivo = self.MOTIVO_BANCO_OCUPADO if self._eh_banco_ocupado(erro) else str(erro)
+            logger.error(
+                "Falha ao gravar o disjuntor %s pelo STATUS_RELE da placa. Rollback executado: %s.", status, motivo
+            )
+            self.disjuntor_nao_sincronizado.emit(status, motivo)
+            return
+
+        logger.info("Disjuntor e relé gravados como %s pelo STATUS_RELE da placa.", status)
+        self.disjuntor_sincronizado.emit(status, eventos)
+
+    def _gravar_status_e_eventos(self, status, eventos, simular_falha=False):
+        """Atualiza o status do relé e do disjuntor e grava os eventos numa única
+        transação. Qualquer exceção no meio faz o with conn: desfazer tudo (ROLLBACK)."""
+        with self._conn:
+            for tag in self.TAGS_OPERACAO_RELE:
+                if not DispositivoRepository.atualizar_status(tag, status, conn=self._conn):
+                    raise FalhaOperacaoError(f"dispositivo {tag} não está cadastrado no banco")
+
+            if simular_falha:
+                raise FalhaOperacaoError(
+                    "falha simulada entre a atualização do disjuntor e o registro do evento"
+                )
+
+            for evento in eventos:
+                EventoRepository.inserir(evento, conn=self._conn)
 
     @staticmethod
     def _status_disjuntor_no_banco() -> str:

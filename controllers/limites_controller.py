@@ -1,36 +1,39 @@
 import logging
-import sqlite3
 
+from PySide6.QtCore import QObject
 from PySide6.QtWidgets import QDialog, QMessageBox
 
 from controllers.regras_alerta_controller import RegrasAlertaController
 from models.evento_historico import EventoHistorico
 from models.limite import Limite
-from models.limite_repository import LimiteRepository
 
 logger = logging.getLogger("smartgrid")
 
 
-class LimitesController:
+class LimitesController(QObject):
     """Monitora a telemetria do dashboard contra os limites de segurança da tabela limites.
 
-    Ao abrir o dashboard, carrega os limites gravados no banco e passa a comparar cada
-    nova medição com eles. Quando um limite começa a ser violado (transição normal ->
-    violado), acende o alarme visual no indicador da grandeza, registra o WARNING no log
-    e grava o evento no histórico. Enquanto a violação continua, nada é registrado de
-    novo; quando a medição volta ao normal, o alarme apaga e a próxima violação volta a
-    ser registrada.
+    Ao abrir o dashboard, pede os limites gravados ao DatabaseWorker e passa a comparar
+    cada nova medição com eles. Até a resposta chegar valem os limites iniciais do
+    config.json, para o dashboard nunca ficar sem proteção. Quando um limite começa a
+    ser violado (transição normal -> violado), acende o alarme visual no indicador da
+    grandeza, registra o WARNING no log e grava o evento no histórico. Enquanto a
+    violação continua, nada é registrado de novo; quando a medição volta ao normal, o
+    alarme apaga e a próxima violação volta a ser registrada.
 
-    O botão "Configurar Regras de Alerta" também fica aqui: o QDialog grava os limites
-    no banco e, quando é aceito, eles passam a ser monitorados na hora.
+    O botão "Configurar Regras de Alerta" também fica aqui: o QDialog pede a gravação
+    dos limites ao DatabaseWorker e, quando o banco confirma (limites_salvos), eles
+    passam a ser monitorados na hora.
     """
 
     COR_ALARME = "#C0392B"
 
-    def __init__(self, janela, ui, historico):
+    def __init__(self, janela, ui, historico, banco):
+        super().__init__(janela)
         self.janela = janela
         self.ui = ui
         self.historico = historico
+        self.banco = banco
 
         # Indicador (LCD) e título de cada grandeza monitorada, com o texto e o estilo
         # originais do título para restaurar quando o alarme apagar.
@@ -43,36 +46,51 @@ class LimitesController:
             for parametro, (_, titulo) in self.indicadores.items()
         }
 
-        self.limites = self._carregar_limites()
+        # Até o DatabaseWorker responder valem os limites iniciais do config.json.
+        # limites_nao_gravados diz se algum dos monitorados ainda não está na tabela
+        # limites (o QDialog avisa o operador e grava no OK).
+        self.limites = Limite.iniciais_do_config()
+        self.limites_nao_gravados = True
         self.medicao_atual = None
         self._violados = set()
 
         self.ui.btn_regras_alerta.clicked.connect(self._ao_abrir_regras_alerta)
+        self.banco.limites_carregados.connect(self._ao_carregar_limites)
+        self.banco.limites_salvos.connect(self._ao_salvar_limites)
+        self.banco.carregar_limites()
 
-    def _carregar_limites(self) -> list:
-        """Limites monitorados desde a abertura do dashboard: os gravados no banco ou, na
-        falta deles, os limites iniciais do config.json."""
-        try:
-            limites = LimiteRepository.listar_todos()
-        except sqlite3.Error as erro:
-            logger.error("Falha ao carregar os limites de segurança do banco: %s", erro)
+    def _ao_carregar_limites(self, limites, nao_gravados, falha):
+        """Resposta do DatabaseWorker: os limites gravados (já conferidos contra a faixa
+        da bancada) ou, na falta deles, os iniciais do config.json."""
+        self.limites_nao_gravados = nao_gravados
+        if falha:
             QMessageBox.warning(
                 self.janela,
                 "Limites de segurança",
                 "Não foi possível carregar os limites gravados no banco, e o monitoramento usa "
                 "os limites iniciais do config.json.\nOs detalhes do erro estão em logs/smartgrid.log.",
             )
-            limites = []
-
-        if limites:
+            logger.info("Monitoramento iniciado com os limites iniciais do config.json: %s.", Limite.resumir(limites))
+        elif nao_gravados:
+            # Tabela vazia (primeiro uso ou clone limpo) ou com parâmetro faltando.
+            logger.info(
+                "Monitoramento iniciado com limites ainda não gravados no banco (valores iniciais do "
+                "config.json): %s.", Limite.resumir(limites),
+            )
+        else:
             logger.info("Monitoramento iniciado com os limites do banco: %s.", Limite.resumir(limites))
-            return limites
+        self.aplicar_limites(limites)
 
-        # Tabela vazia (primeiro uso ou clone limpo) ou banco ilegível: o dashboard nunca
-        # fica sem proteção, e valem os limites iniciais do config.json.
-        limites = Limite.iniciais_do_config()
-        logger.info("Monitoramento iniciado com os limites iniciais do config.json: %s.", Limite.resumir(limites))
-        return limites
+    def _ao_salvar_limites(self, limites):
+        """O banco confirmou a gravação dos limites do QDialog: passam a valer na hora.
+
+        Fica aqui, e não no fechamento do diálogo, porque o que vale é o que está gravado:
+        se o operador fechar o diálogo enquanto a gravação anda, ela ainda é aplicada.
+        """
+        self.limites_nao_gravados = False
+        descricao = f"Limites de segurança salvos pelo operador: {Limite.resumir(limites)}"
+        self.historico.registrar(EventoHistorico(EventoHistorico.REGRAS_ALERTA, descricao))
+        self.aplicar_limites(limites)
 
     # ------------------------------------------------------------------
     # Monitoramento da telemetria
@@ -155,13 +173,10 @@ class LimitesController:
     # ------------------------------------------------------------------
 
     def _ao_abrir_regras_alerta(self):
+        """Abre o QDialog com os limites monitorados agora, sem ler o banco de novo."""
         dialog = QDialog(self.janela)
-        regras_dialog = RegrasAlertaController(dialog)
-        if dialog.exec() != QDialog.Accepted:
-            return
-
-        # Quando o diálogo é aceito, os limites já foram gravados no banco por ele.
-        limites = regras_dialog.get_limites()
-        descricao = f"Limites de segurança salvos pelo operador: {Limite.resumir(limites)}"
-        self.historico.registrar(EventoHistorico(EventoHistorico.REGRAS_ALERTA, descricao))
-        self.aplicar_limites(limites)
+        regras_dialog = RegrasAlertaController(dialog, self.banco, self.limites, self.limites_nao_gravados)
+        dialog.exec()
+        # A gravação confirmada já chegou por _ao_salvar_limites; aqui só se desfaz o diálogo.
+        regras_dialog.desligar()
+        dialog.deleteLater()

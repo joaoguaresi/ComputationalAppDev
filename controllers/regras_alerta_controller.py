@@ -1,34 +1,35 @@
 import logging
 import math
-import sqlite3
-from contextlib import closing
 
-from PySide6.QtCore import QDate
+from PySide6.QtCore import QDate, QObject
 from PySide6.QtWidgets import QMessageBox
 
-from database.connection import Database
 from models.limite import Limite
-from models.limite_repository import LimiteRepository
 from ui.regras_alerta_dialog import Ui_RegrasAlertaDialog
 
 logger = logging.getLogger("smartgrid")
 
 
-class RegrasAlertaController:
+class RegrasAlertaController(QObject):
     """Controla o QDialog de cadastro de regras de alerta (limites de segurança).
 
-    Ao abrir, carrega os limites gravados na tabela limites do banco. Cada parâmetro
-    (corrente máxima e tensão de desarme) tem um único limite, e o diálogo exige o
-    cadastro de no mínimo duas regras antes de liberar o botão OK. Todo valor digitado
-    é validado aqui, no controller, antes de entrar na lista. No OK, os limites são
-    gravados no banco numa única transação e ficam disponíveis via get_limites() para
-    a tela principal buscar depois que o diálogo é aceito.
+    Abre com os limites que o dashboard monitora agora (os da tabela limites, já lidos
+    pelo DatabaseWorker). Cada parâmetro (corrente máxima e tensão de desarme) tem um
+    único limite, e o diálogo exige o cadastro de no mínimo duas regras antes de liberar
+    o botão OK. Todo valor digitado é validado aqui, no controller, antes de entrar na
+    lista, inclusive contra a faixa da bancada (até 12 V e 30 A).
+
+    No OK, os limites vão para o DatabaseWorker, que os grava numa única transação. O
+    diálogo fica aberto, com os botões travados, até a resposta: fecha quando o banco
+    confirma e continua aberto para correção quando ele recusa.
     """
 
     MINIMO_REGRAS = 2
 
-    def __init__(self, dialog):
+    def __init__(self, dialog, banco, limites, limites_nao_gravados=False):
+        super().__init__(dialog)
         self.dialog = dialog
+        self.banco = banco
         self.ui = Ui_RegrasAlertaDialog()
         self.ui.setupUi(dialog)
 
@@ -37,49 +38,28 @@ class RegrasAlertaController:
             self.ui.combo_grandeza.addItem(rotulo, parametro)
         self.ui.date_vigencia.setDate(QDate.currentDate())
 
-        # True quando a tabela limites está vazia e a lista veio do config.json: os valores
-        # aparecem para o operador, mas só são gravados no banco quando ele confirma.
-        self.limites_do_config = False
-        self.limites = self._carregar_limites_salvos()
+        # True quando algum limite da lista veio do config.json (tabela limites vazia ou
+        # incompleta): os valores aparecem para o operador, mas só são gravados no banco
+        # quando ele confirma.
+        self.limites_do_config = limites_nao_gravados
+        self.limites = sorted(limites, key=lambda limite: limite.parametro)
+        self._salvando = False
 
         self._conectar_sinais()
         self._redesenhar_lista()
-
-    def _carregar_limites_salvos(self) -> list:
-        """Lê os limites gravados no banco para mostrá-los na lista ao abrir o diálogo.
-
-        Com a tabela vazia (primeiro uso ou clone limpo), a lista já vem com os limites
-        iniciais do config.json, que só são gravados quando o operador confirma com OK.
-        """
-        try:
-            limites = LimiteRepository.listar_todos()
-        except sqlite3.Error as erro:
-            logger.error("Falha ao carregar os limites de segurança do banco: %s", erro)
-            QMessageBox.warning(
-                self.dialog,
-                "Limites de segurança",
-                "Não foi possível carregar os limites gravados no banco.\n"
-                "Os detalhes do erro estão em logs/smartgrid.log.",
-            )
-            return []
-
-        if not limites:
-            self.limites_do_config = True
-            limites = Limite.iniciais_do_config()
-            logger.info(
-                "Tabela limites vazia: o diálogo abre com os limites iniciais do config.json: %s.",
-                Limite.resumir(limites),
-            )
-            return limites
-
-        logger.info("Limites de segurança carregados do banco: %d registro(s).", len(limites))
-        return limites
 
     def _conectar_sinais(self):
         self.ui.btn_adicionar.clicked.connect(self._adicionar_valor_digitado)
         self.ui.btn_remover.clicked.connect(self._ao_remover_regra)
         self.ui.button_box.accepted.connect(self._validar_antes_de_aceitar)
         self.ui.button_box.rejected.connect(self.dialog.reject)
+        self.banco.limites_salvos.connect(self._ao_salvar_limites)
+        self.banco.limites_nao_salvos.connect(self._ao_recusar_limites)
+
+    def desligar(self):
+        """Desliga as respostas do banco quando o diálogo fecha."""
+        self.banco.limites_salvos.disconnect(self._ao_salvar_limites)
+        self.banco.limites_nao_salvos.disconnect(self._ao_recusar_limites)
 
     def _adicionar_valor_digitado(self) -> bool:
         """Valida o valor digitado e, se ele for válido, inclui o limite na lista.
@@ -88,7 +68,7 @@ class RegrasAlertaController:
         isso, nada é gravado no banco.
         """
         parametro = self.ui.combo_grandeza.currentData()
-        valor = self._validar_valor(self.ui.edit_limite_max.text().strip(), Limite.NOMES[parametro].lower())
+        valor = self._validar_valor(self.ui.edit_limite_max.text().strip(), parametro)
         if valor is None:
             return False
 
@@ -102,12 +82,14 @@ class RegrasAlertaController:
         self._redesenhar_lista()
         return True
 
-    def _validar_valor(self, texto, nome):
+    def _validar_valor(self, texto, parametro):
         """Converte o texto digitado no valor do limite, ou devolve None se ele for inválido.
 
-        A validação segue esta ordem: campo vazio, valor não numérico e valor zero ou
-        negativo. Cada falha avisa o operador com QMessageBox e registra WARNING no log.
+        A validação segue esta ordem: campo vazio, valor não numérico, valor zero ou
+        negativo e valor acima da faixa da bancada. Cada falha avisa o operador com
+        QMessageBox e registra WARNING no log.
         """
+        nome = Limite.NOMES[parametro].lower()
         if not texto:
             self._recusar_entrada(
                 "Campo vazio",
@@ -136,6 +118,18 @@ class RegrasAlertaController:
                 "Valor inválido",
                 f"O limite de {nome} precisa ser maior que zero.\nValor informado: {texto}",
                 f"valor {texto} menor ou igual a zero ({nome})",
+            )
+            return None
+
+        maximo = Limite.MAXIMOS[parametro]
+        if valor > maximo:
+            unidade = Limite.UNIDADES[parametro]
+            self._recusar_entrada(
+                "Valor acima da faixa da bancada",
+                f"O limite de {nome} precisa ser no máximo {maximo:.2f} {unidade}: a bancada "
+                "trabalha com 0 a 12 V e ±30 A, e um limite acima disso nunca dispararia.\n"
+                f"Valor informado: {texto}",
+                f"valor {texto} acima da faixa da bancada, máximo {maximo:.2f} {unidade} ({nome})",
             )
             return None
 
@@ -187,49 +181,48 @@ class RegrasAlertaController:
             )
             return
 
-        if not self._salvar_limites():
+        self._salvar_limites()
+
+    def _salvar_limites(self):
+        """Pede ao DatabaseWorker a gravação de todos os limites da lista numa única
+        transação (ou todos, ou nenhum) e trava os botões até a resposta.
+
+        O diálogo continua respondendo enquanto o banco grava: a gravação roda na thread
+        do banco. A resposta chega por limites_salvos ou limites_nao_salvos.
+        """
+        self._salvando = True
+        self._travar_edicao(True)
+        self.ui.label_status.setText("Gravando os limites no banco...")
+        self.banco.salvar_limites(self.limites)
+
+    def _ao_salvar_limites(self, _limites):
+        """O banco confirmou o COMMIT: o diálogo fecha. O LimitesController, que também
+        recebe este sinal, passa a monitorar os limites novos."""
+        if not self._salvando:
             return
+        self._salvando = False
         self.dialog.accept()
 
-    def _salvar_limites(self) -> bool:
-        """Grava todos os limites da lista numa única transação: ou todos, ou nenhum.
+    def _ao_recusar_limites(self, motivo):
+        """O banco recusou a gravação (CHECK, faixa da bancada ou banco ocupado): o ROLLBACK
+        já desfez tudo, e o diálogo continua aberto para a correção."""
+        if not self._salvando:
+            return
+        self._salvando = False
+        self._travar_edicao(False)
+        self._redesenhar_lista()
+        QMessageBox.critical(
+            self.dialog,
+            "Limites não salvos",
+            "Não foi possível gravar os limites no banco.\n"
+            f"Motivo: {motivo}\n\n"
+            "A transação foi desfeita (ROLLBACK) e nenhum limite foi alterado. Corrija e tente novamente.",
+        )
 
-        Cada LimiteRepository.salvar recebe a mesma conexão e não faz commit. O with conn:
-        faz o COMMIT só no fim do bloco; se qualquer limite falhar, o ROLLBACK desfaz os
-        que já tinham sido gravados, e o diálogo continua aberto para a correção.
-        """
-        try:
-            with closing(Database.get_connection()) as conn:
-                with conn:
-                    for limite in self.limites:
-                        LimiteRepository.salvar(limite, conn=conn)
-        except sqlite3.IntegrityError as erro:
-            # Segunda barreira: a validação do controller já recusa zero, negativo e
-            # texto, mas o CHECK da tabela recusa de novo qualquer valor que escape dela.
-            logger.error("Limites de segurança recusados pelo banco. Rollback executado: %s.", erro)
-            QMessageBox.critical(
-                self.dialog,
-                "Limites não salvos",
-                "O banco recusou os limites por violarem uma restrição de integridade.\n"
-                f"Motivo: {erro}\n\n"
-                "A transação foi desfeita (ROLLBACK) e nenhum limite foi alterado.",
-            )
-            return False
-        except sqlite3.Error as erro:
-            # OperationalError (ex.: database is locked, quando o timeout da conexão se
-            # esgota) e as demais falhas do SQLite.
-            logger.error("Falha ao salvar os limites de segurança, nenhum limite foi alterado: %s.", erro)
-            QMessageBox.critical(
-                self.dialog,
-                "Limites não salvos",
-                "Não foi possível gravar os limites no banco.\n"
-                f"Motivo: {erro}\n\n"
-                "Nenhum limite foi alterado. Tente novamente.",
-            )
-            return False
-
-        logger.info("Limites de segurança salvos no banco: %s.", Limite.resumir(self.limites))
-        return True
+    def _travar_edicao(self, travar):
+        for widget in (self.ui.button_box, self.ui.btn_adicionar, self.ui.btn_remover,
+                       self.ui.edit_limite_max, self.ui.combo_grandeza):
+            widget.setEnabled(not travar)
 
     def get_limites(self) -> list:
         return list(self.limites)

@@ -2,6 +2,7 @@ import logging
 
 from PySide6.QtCore import QObject, Signal
 
+from models.config_manager import ConfigManager
 from models.evento_historico import EventoHistorico
 from models.regra_alerta import RegraAlerta
 
@@ -18,6 +19,11 @@ class ComandosController(QObject):
     """
 
     FATOR_ATENCAO = 0.9
+
+    # Faixa do setpoint na bancada: a potência passa de 12 V x 30 A = 360 W só fora da
+    # faixa física da placa, e um setpoint acima disso nunca dispararia. O mínimo fica no
+    # .ui (10 W); o máximo vem das mesmas constantes que validam o config.json.
+    SETPOINT_MAXIMO_W = ConfigManager.TENSAO_MAXIMA_V * ConfigManager.CORRENTE_MAXIMA_A
 
     NORMAL = "NORMAL"
     ATENCAO = "ATENCAO"
@@ -47,6 +53,7 @@ class ComandosController(QObject):
         self.ui = ui
         self.disjuntor = disjuntor
         self.historico = historico
+        self._aplicar_faixa_setpoint()
 
         self.regra_setpoint = RegraAlerta(
             RegraAlerta.POTENCIA,
@@ -62,6 +69,17 @@ class ComandosController(QObject):
 
         self._conectar_sinais()
         self._aplicar_nivel(ComandosController.NORMAL)
+
+    def _aplicar_faixa_setpoint(self):
+        """Limita o spin e o slider do setpoint à potência máxima da bancada."""
+        maximo = self.SETPOINT_MAXIMO_W
+        self.ui.spin_setpoint.setMaximum(maximo)
+        self.ui.slider_setpoint.setMaximum(int(maximo))
+        self.ui.spin_setpoint.setToolTip(
+            "Limite máximo de potência monitorado pela proteção local "
+            f"(bancada: até {ConfigManager.TENSAO_MAXIMA_V:.0f} V x "
+            f"{ConfigManager.CORRENTE_MAXIMA_A:.0f} A = {maximo:.0f} W)"
+        )
 
     def _conectar_sinais(self):
         self.ui.spin_setpoint.valueChanged.connect(self._ao_alterar_setpoint)
